@@ -1,6 +1,7 @@
 import { config } from '../shared/config';
 import { createPool } from '../shared/db';
 import { connectRabbit, createTopology } from '../shared/rabbitmq';
+import { createRedis, RateLimiter, waitForRedis } from '../shared/rate-limiter';
 import { EmailProvider, SmtpProvider } from './email-provider';
 import { MockProvider } from './mock-provider';
 import { startWorker } from './run-worker';
@@ -26,11 +27,28 @@ async function main() {
     process.exit(1);
   });
 
+  const provider = createProvider();
+  const redis = createRedis(config.REDIS_URL);
+  await waitForRedis(redis);
+  const ratePerSec = config.PROVIDER_RATE_LIMIT_PER_SEC;
+  const throttle =
+    ratePerSec > 0
+      ? new RateLimiter(redis, {
+          key: `ratelimit:provider:${provider.name}`,
+          ratePerSec,
+          capacity: config.PROVIDER_RATE_LIMIT_BURST ?? Math.max(1, Math.ceil(ratePerSec)),
+        })
+      : undefined;
+  console.log(
+    throttle ? `[worker] rate limit: ${ratePerSec} emails/s to ${provider.name}` : '[worker] rate limiting is off',
+  );
+
   const worker = await startWorker({
     pool,
     connection,
     topology: createTopology(config.RETRY_DELAYS_MS),
-    provider: createProvider(),
+    provider,
+    throttle,
     priorities: config.WORKER_QUEUES,
     prefetch: config.WORKER_PREFETCH,
     sendingLeaseMs: config.SENDING_LEASE_MS,
@@ -41,6 +59,7 @@ async function main() {
     connection.removeAllListeners('close');
     await worker.stop();
     await connection.close();
+    redis.disconnect();
     await pool.end();
     process.exit(0);
   };

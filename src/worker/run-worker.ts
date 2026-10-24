@@ -5,6 +5,11 @@ import { log } from '../shared/log';
 import { EmailProvider } from './email-provider';
 import { processEmail, ProcessResult } from './process-email';
 
+// Waits until we're allowed to send one more email (see src/shared/rate-limiter.ts).
+export interface Throttle {
+  acquire(): Promise<number>;
+}
+
 export interface WorkerOptions {
   pool: Pool;
   connection: ChannelModel;
@@ -13,6 +18,7 @@ export interface WorkerOptions {
   priorities: Priority[];
   prefetch: number;
   sendingLeaseMs: number;
+  throttle?: Throttle;
 }
 
 /**
@@ -24,7 +30,7 @@ export interface WorkerOptions {
  * sometimes delivered twice, which processEmail's claim step handles.
  */
 export async function startWorker(options: WorkerOptions): Promise<{ stop: () => Promise<void> }> {
-  const { pool, connection, topology, provider, priorities, prefetch, sendingLeaseMs } = options;
+  const { pool, connection, topology, provider, priorities, prefetch, sendingLeaseMs, throttle } = options;
   const deps = { pool, provider, retryDelaysMs: topology.retryDelaysMs, sendingLeaseMs };
 
   const setup = await connection.createChannel();
@@ -72,6 +78,11 @@ export async function startWorker(options: WorkerOptions): Promise<{ stop: () =>
 
     let result: ProcessResult;
     try {
+      // Rate limit BEFORE claiming the email. If we claimed first and then waited, a long
+      // wait could outlast the claim's lease and another worker would take the email over.
+      // While we wait, this message holds one prefetch slot, so the worker naturally slows
+      // down and the rest of the emails wait safely in RabbitMQ (backpressure).
+      if (throttle) await throttle.acquire();
       result = await processEmail(deps, message.emailId);
     } catch (err) {
       // Infrastructure problem (e.g. Postgres is down), not a problem with this email.

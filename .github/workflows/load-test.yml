@@ -20,6 +20,9 @@ on:
       mock_failure_rate:
         description: "Fraction of sends that fail temporarily (0 to 1)"
         default: "0"
+      provider_rate_limit:
+        description: "Max emails/second to the provider, across all workers (0 = off)"
+        default: "1000"
 
 jobs:
   load-test:
@@ -48,13 +51,22 @@ jobs:
           --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 10s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 10
 
     env:
       DATABASE_URL: postgres://relay:relay@localhost:5432/relay
       RABBITMQ_URL: amqp://relay:relay@localhost:5672
+      REDIS_URL: redis://localhost:6379
       EMAIL_PROVIDER: mock
       MOCK_LATENCY_MS: ${{ inputs.mock_latency_ms }}
       MOCK_FAILURE_RATE: ${{ inputs.mock_failure_rate }}
+      PROVIDER_RATE_LIMIT_PER_SEC: ${{ inputs.provider_rate_limit }}
       # Short retry delays, so a run with failures finishes in seconds, not minutes
       RETRY_DELAYS_MS: 1000,2000,4000
       LOG_LEVEL: warn
@@ -82,7 +94,7 @@ jobs:
 
       - name: Machine
         run: |
-          echo "Runner: $(nproc) CPU cores, $(free -g | awk '/Mem:/ {print $2}') GB RAM, $WORKERS worker(s)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Runner: $(nproc) CPU cores, $(free -g | awk '/Mem:/ {print $2}') GB RAM, $WORKERS worker(s), provider rate limit $PROVIDER_RATE_LIMIT_PER_SEC/s" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Run load test
         run: npm run load:test

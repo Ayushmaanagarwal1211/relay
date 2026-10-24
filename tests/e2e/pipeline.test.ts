@@ -12,6 +12,8 @@ import { createApp } from '../../src/api/app';
 import { createPool } from '../../src/shared/db';
 import { connectRabbit, createTopology, PRIORITIES, Topology } from '../../src/shared/rabbitmq';
 import { startRelay } from '../../src/relay/run-relay';
+import { createRedis, RateLimiter, waitForRedis } from '../../src/shared/rate-limiter';
+import Redis from 'ioredis';
 import { EmailProvider, SmtpProvider } from '../../src/worker/email-provider';
 import { startWorker } from '../../src/worker/run-worker';
 import { FakeProvider } from '../helpers/fake-provider';
@@ -23,15 +25,19 @@ const RABBITMQ_URL = process.env.RABBITMQ_URL ?? 'amqp://relay:relay@localhost:5
 const SMTP_HOST = process.env.SMTP_HOST ?? 'localhost';
 const SMTP_PORT = Number(process.env.SMTP_PORT ?? 1025);
 const MAILPIT_URL = process.env.MAILPIT_URL ?? 'http://localhost:8025';
+const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
 const pool = createPool(testDatabaseUrl());
 const app = createApp(pool);
 let connection: ChannelModel;
+let redis: Redis;
 let stopFns: (() => Promise<void>)[] = [];
 let topology: Topology;
 
 beforeAll(async () => {
   connection = await connectRabbit(RABBITMQ_URL);
+  redis = createRedis(REDIS_URL);
+  await waitForRedis(redis);
 });
 
 beforeEach(async () => {
@@ -45,12 +51,17 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  redis.disconnect();
   await connection.close();
   await pool.end();
 });
 
 // Starts a relay and a worker with short retry delays, on a fresh isolated topology.
-async function startPipeline(provider: EmailProvider, retryDelaysMs = [200, 200]) {
+async function startPipeline(
+  provider: EmailProvider,
+  retryDelaysMs = [200, 200],
+  throttle?: RateLimiter,
+) {
   topology = createTopology(retryDelaysMs, `test-${randomUUID().slice(0, 8)}`);
   const relay = await startRelay({ pool, connection, topology, pollIntervalMs: 50, batchSize: 100 });
   const worker = await startWorker({
@@ -61,6 +72,7 @@ async function startPipeline(provider: EmailProvider, retryDelaysMs = [200, 200]
     priorities: PRIORITIES,
     prefetch: 10,
     sendingLeaseMs: 60_000,
+    throttle,
   });
   stopFns.push(relay.stop, worker.stop);
 }
@@ -172,5 +184,21 @@ describe('email pipeline', () => {
     await new Promise((r) => setTimeout(r, 1000));
 
     expect(provider.sent).toHaveLength(1);
+  });
+
+  it('spreads sends out to respect the provider rate limit', async () => {
+    const provider = new FakeProvider(['ok']);
+    // 10 emails/s, burst of 1: 8 emails need at least ~700ms
+    const throttle = new RateLimiter(redis, { key: `test:ratelimit:${randomUUID()}`, ratePerSec: 10, capacity: 1 });
+    await startPipeline(provider, [200, 200], throttle);
+
+    const started = Date.now();
+    const ids = await Promise.all(
+      Array.from({ length: 8 }, (_, i) => postEmail({ to: `u${i}@example.com`, subject: 'Limited', body: 'Hi' })),
+    );
+    for (const id of ids) expect(await waitForFinalStatus(id)).toMatchObject({ status: 'sent' });
+
+    expect(provider.sent).toHaveLength(8);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(650);
   });
 });

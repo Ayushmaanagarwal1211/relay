@@ -33,6 +33,13 @@ jobs:
           --health-cmd "rabbitmq-diagnostics -q ping"
           --health-interval 10s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 10
       mailpit:
         image: axllent/mailpit:latest
         ports: ["1025:1025", "8025:8025"]
@@ -40,6 +47,7 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://relay:relay@localhost:5432/relay_test
       RABBITMQ_URL: amqp://relay:relay@localhost:5672
+      REDIS_URL: redis://localhost:6379
       SMTP_HOST: localhost
       SMTP_PORT: 1025
       MAILPIT_URL: http://localhost:8025
@@ -55,7 +63,7 @@ jobs:
       - run: npm run build
       - name: Unit tests
         run: npm test
-      - name: Integration tests (Postgres)
+      - name: Integration tests (Postgres + Redis)
         run: npm run test:integration
-      - name: End-to-end tests (Postgres + RabbitMQ + Mailpit)
+      - name: End-to-end tests (Postgres + RabbitMQ + Redis + Mailpit)
         run: npm run test:e2e

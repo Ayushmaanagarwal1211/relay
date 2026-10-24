@@ -16,6 +16,7 @@ const schema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().min(1),
   RABBITMQ_URL: z.string().min(1).default('amqp://relay:relay@localhost:5672'),
+  REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
 
   SMTP_HOST: z.string().min(1).default('localhost'),
   SMTP_PORT: z.coerce.number().int().positive().default(1025),
@@ -36,6 +37,11 @@ const schema = z.object({
   WORKER_PREFETCH: z.coerce.number().int().positive().default(10),
   // If an email has been 'sending' longer than this, assume that worker crashed
   SENDING_LEASE_MS: z.coerce.number().int().positive().default(60_000),
+  // Max emails per second sent to the provider, shared by ALL workers (stored in Redis).
+  // Set it to your provider plan's limit. 0 turns rate limiting off.
+  PROVIDER_RATE_LIMIT_PER_SEC: z.coerce.number().nonnegative().default(1000),
+  // How many emails can go out at once after a quiet period. Defaults to one second's worth.
+  PROVIDER_RATE_LIMIT_BURST: z.coerce.number().int().positive().optional(),
   // Which queues this worker process consumes, e.g. "transactional" to run an OTP-only worker
   WORKER_QUEUES: z
     .string()
