@@ -25,9 +25,9 @@ Client app ──POST /v1/emails (Idempotency-Key header)──► API service
 
 - [x] Step 1: Design
 - [x] Step 2: API with idempotency, plus the transactional outbox write
-- [ ] Step 3: Outbox relay, RabbitMQ, email worker, retries, dead-letter queue
-- [ ] Step 4: Rate limiting (Redis) and priority queues
-- [ ] Step 5: More tests, and CI with GitHub Actions
+- [x] Step 3: Outbox relay, RabbitMQ, email worker, retries, dead-letter queue (plus CI)
+- [ ] Step 4: Rate limiting (Redis)
+- [ ] Step 5: More tests
 - [ ] Step 6: Mock provider, k6 load tests, failure drills
 - [ ] Step 7: Final README and results
 
@@ -36,7 +36,7 @@ Client app ──POST /v1/emails (Idempotency-Key header)──► API service
 **Easiest: GitHub Codespaces** (nothing to install). On GitHub, click **Code → Codespaces → Create codespace**. Dependencies install automatically; then run:
 
 ```bash
-npm run infra:up && npm run db:migrate && npm run dev:api
+npm run infra:up && npm run db:migrate && npm run dev
 ```
 
 **On your own machine:** requires Node.js 22+ and Docker.
@@ -46,8 +46,11 @@ npm install
 cp .env.example .env
 npm run infra:up      # Postgres, RabbitMQ, Redis, Mailpit
 npm run db:migrate
-npm run dev:api       # http://localhost:3000
+npm run dev           # API (http://localhost:3000), outbox relay and email worker
 ```
+
+- Sent emails show up in Mailpit: http://localhost:8025
+- RabbitMQ dashboard: http://localhost:15672 (login `relay` / `relay`)
 
 Send an email:
 
@@ -85,15 +88,20 @@ curl localhost:3000/v1/emails/<id>
 
 ```bash
 npm test                  # unit tests, no Docker needed
-npm run test:integration  # needs `npm run infra:up`; uses the separate relay_test database
+npm run test:integration  # needs Postgres; uses the separate relay_test database
+npm run test:e2e          # needs Postgres, RabbitMQ and Mailpit; runs the whole pipeline
 ```
+
+GitHub Actions runs all three on every push (`.github/workflows/ci.yml`).
 
 ## Project layout
 
 ```
 src/
   api/        HTTP API: routes, validation, idempotency + outbox write
-  shared/     config, database pool, migrations
+  relay/      outbox relay: moves outbox rows into RabbitMQ
+  worker/     email worker: claims, sends, retries, dead-letters
+  shared/     config, database pool, migrations, RabbitMQ setup
   scripts/    one-off commands (migrate)
 migrations/   SQL schema, applied in filename order
 tests/        unit and integration tests
