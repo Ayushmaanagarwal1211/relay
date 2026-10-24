@@ -1,0 +1,91 @@
+name: Load test
+
+# Run by hand: GitHub → Actions → "Load test" → "Run workflow".
+# Results appear on the run's summary page.
+on:
+  workflow_dispatch:
+    inputs:
+      rate:
+        description: "Emails per second sent to the API"
+        default: "200"
+      duration:
+        description: "How long to send for (e.g. 30s, 1m)"
+        default: "30s"
+      workers:
+        description: "Number of worker processes"
+        default: "1"
+      mock_latency_ms:
+        description: "Simulated provider latency per email (ms)"
+        default: "50"
+      mock_failure_rate:
+        description: "Fraction of sends that fail temporarily (0 to 1)"
+        default: "0"
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+          POSTGRES_DB: relay
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h localhost -U relay -d relay"
+          --health-interval 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4-management
+        env:
+          RABBITMQ_DEFAULT_USER: relay
+          RABBITMQ_DEFAULT_PASS: relay
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://relay:relay@localhost:5432/relay
+      RABBITMQ_URL: amqp://relay:relay@localhost:5672
+      EMAIL_PROVIDER: mock
+      MOCK_LATENCY_MS: ${{ inputs.mock_latency_ms }}
+      MOCK_FAILURE_RATE: ${{ inputs.mock_failure_rate }}
+      # Short retry delays, so a run with failures finishes in seconds, not minutes
+      RETRY_DELAYS_MS: 1000,2000,4000
+      LOG_LEVEL: warn
+      RATE: ${{ inputs.rate }}
+      DURATION: ${{ inputs.duration }}
+      WORKERS: ${{ inputs.workers }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run db:migrate
+
+      - name: Start API, relay and workers
+        run: |
+          npm run start:api > api.log 2>&1 &
+          npm run start:relay > relay.log 2>&1 &
+          for i in $(seq 1 "$WORKERS"); do npm run start:worker > "worker-$i.log" 2>&1 & done
+          for i in $(seq 1 30); do curl -sf localhost:3000/health && break; sleep 1; done
+          sleep 3 # let the workers connect to RabbitMQ
+
+      - name: Machine
+        run: echo "Runner: $(nproc) CPU cores, $(free -g | awk '/Mem:/ {print $2}') GB RAM, $WORKERS worker(s)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Run load test
+        run: npm run load:test
+
+      - name: Show process logs
+        if: always()
+        run: tail -n 30 api.log relay.log worker-*.log

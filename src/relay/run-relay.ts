@@ -1,5 +1,6 @@
 import { ChannelModel, ConfirmChannel } from 'amqplib';
 import { Pool } from 'pg';
+import { log } from '../shared/log';
 import { assertTopology, Topology } from '../shared/rabbitmq';
 import { Publisher, relayBatch } from './outbox-relay';
 
@@ -39,9 +40,9 @@ export async function startRelay(options: RelayOptions): Promise<{ stop: () => P
       let published = 0;
       try {
         published = await relayBatch(pool, publisher, batchSize);
-        if (published > 0) console.log(`[relay] published ${published} message(s)`);
+        if (published > 0) log.info(`[relay] published ${published} message(s)`);
       } catch (err) {
-        console.error('[relay] batch failed, will retry:', err);
+        log.error('[relay] batch failed, will retry:', err);
       }
       // A full batch means there are probably more rows waiting: go again straight away.
       // Otherwise sleep until the next poll (or until stop() wakes us up).

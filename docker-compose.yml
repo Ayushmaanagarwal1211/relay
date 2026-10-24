@@ -52,5 +52,18 @@ services:
       - "1025:1025" # SMTP (the worker sends here)
       - "8025:8025" # Web inbox: http://localhost:8025
 
+  # Load testing tool. Only runs when asked: npm run load:test
+  k6:
+    image: grafana/k6:latest
+    profiles: ["load"]
+    network_mode: host # so k6 can reach the API at localhost:3000
+    volumes:
+      - ./load:/load:ro
+    environment:
+      RATE: ${RATE:-100}
+      DURATION: ${DURATION:-30s}
+      API_URL: ${API_URL:-http://localhost:3000}
+    command: ["run", "--quiet", "/load/send-emails.js"]
+
 volumes:
   postgres-data:

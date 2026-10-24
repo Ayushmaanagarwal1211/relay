@@ -11,11 +11,15 @@
     "dev:api": "tsx watch src/api/server.ts",
     "dev:relay": "tsx watch src/relay/main.ts",
     "dev:worker": "tsx watch src/worker/main.ts",
+    "start:api": "node dist/api/server.js",
+    "start:relay": "node dist/relay/main.js",
+    "start:worker": "node dist/worker/main.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "jest --selectProjects unit",
     "test:integration": "jest --selectProjects integration --runInBand",
-    "test:e2e": "jest --selectProjects e2e --runInBand"
+    "test:e2e": "jest --selectProjects e2e --runInBand",
+    "load:test": "tsx src/scripts/load-test.ts"
   },
   "dependencies": {
     "amqplib": "^2.2.0",

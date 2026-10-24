@@ -1,8 +1,19 @@
 import { config } from '../shared/config';
 import { createPool } from '../shared/db';
 import { connectRabbit, createTopology } from '../shared/rabbitmq';
-import { SmtpProvider } from './email-provider';
+import { EmailProvider, SmtpProvider } from './email-provider';
+import { MockProvider } from './mock-provider';
 import { startWorker } from './run-worker';
+
+function createProvider(): EmailProvider {
+  if (config.EMAIL_PROVIDER === 'mock') {
+    console.log(
+      `[worker] using MOCK provider (${config.MOCK_LATENCY_MS}ms latency, ${config.MOCK_FAILURE_RATE * 100}% failures)`,
+    );
+    return new MockProvider(config.MOCK_LATENCY_MS, config.MOCK_FAILURE_RATE);
+  }
+  return new SmtpProvider({ host: config.SMTP_HOST, port: config.SMTP_PORT }, config.EMAIL_FROM);
+}
 
 async function main() {
   const pool = createPool(config.DATABASE_URL);
@@ -19,7 +30,7 @@ async function main() {
     pool,
     connection,
     topology: createTopology(config.RETRY_DELAYS_MS),
-    provider: new SmtpProvider({ host: config.SMTP_HOST, port: config.SMTP_PORT }, config.EMAIL_FROM),
+    provider: createProvider(),
     priorities: config.WORKER_QUEUES,
     prefetch: config.WORKER_PREFETCH,
     sendingLeaseMs: config.SENDING_LEASE_MS,

@@ -1,6 +1,7 @@
 import { ChannelModel, ConfirmChannel, ConsumeMessage } from 'amqplib';
 import { Pool } from 'pg';
 import { assertTopology, decodeMessage, encodeMessage, Priority, sendToQueueConfirmed, Topology } from '../shared/rabbitmq';
+import { log } from '../shared/log';
 import { EmailProvider } from './email-provider';
 import { processEmail, ProcessResult } from './process-email';
 
@@ -54,7 +55,7 @@ export async function startWorker(options: WorkerOptions): Promise<{ stop: () =>
 
     const { consumerTag } = await channel.consume(topology.mainQueue(priority), (msg) => void handle(msg));
     consumers.push({ channel, tag: consumerTag });
-    console.log(`[worker] consuming ${topology.mainQueue(priority)} (prefetch ${prefetch})`);
+    log.info(`[worker] consuming ${topology.mainQueue(priority)} (prefetch ${prefetch})`);
   }
 
   async function handleMessage(channel: ConfirmChannel, msg: ConsumeMessage, priority: Priority) {
@@ -75,7 +76,7 @@ export async function startWorker(options: WorkerOptions): Promise<{ stop: () =>
     } catch (err) {
       // Infrastructure problem (e.g. Postgres is down), not a problem with this email.
       // Put the message back on the queue after a pause, so we don't spin in a tight loop.
-      console.error(`[worker] ${message.emailId}: unexpected error, requeueing in 1s:`, err);
+      log.error(`[worker] ${message.emailId}: unexpected error, requeueing in 1s:`, err);
       await new Promise((r) => setTimeout(r, 1000));
       channel.nack(msg, false, true);
       return;
@@ -87,10 +88,10 @@ export async function startWorker(options: WorkerOptions): Promise<{ stop: () =>
 
     switch (result.outcome) {
       case 'sent':
-        console.log(`[worker] ${id}: sent via ${provider.name} (attempt ${result.attempts})`);
+        log.info(`[worker] ${id}: sent via ${provider.name} (attempt ${result.attempts})`);
         break;
       case 'skipped':
-        console.log(`[worker] ${id}: skipped (${result.reason}), probably a duplicate message`);
+        log.info(`[worker] ${id}: skipped (${result.reason}), probably a duplicate message`);
         break;
       case 'busy':
         // Another worker holds this email. Check again after the shortest retry delay:
@@ -99,21 +100,21 @@ export async function startWorker(options: WorkerOptions): Promise<{ stop: () =>
           persistent: true,
           headers,
         });
-        console.log(`[worker] ${id}: another worker is sending it, checking again later`);
+        log.info(`[worker] ${id}: another worker is sending it, checking again later`);
         break;
       case 'retry':
         await sendToQueueConfirmed(channel, topology.retryQueue(priority, result.delayMs), content, {
           persistent: true,
           headers: { ...headers, 'x-last-error': result.error },
         });
-        console.warn(`[worker] ${id}: attempt ${result.attempts} failed (${result.error}), retrying in ${result.delayMs}ms`);
+        log.warn(`[worker] ${id}: attempt ${result.attempts} failed (${result.error}), retrying in ${result.delayMs}ms`);
         break;
       case 'dead-letter':
         await sendToQueueConfirmed(channel, topology.deadLetterQueue, content, {
           persistent: true,
           headers: { ...headers, 'x-error': result.error, 'x-reason': result.reason, 'x-attempts': result.attempts },
         });
-        console.error(`[worker] ${id}: gave up after ${result.attempts} attempt(s) (${result.reason}): ${result.error}`);
+        log.warn(`[worker] ${id}: gave up after ${result.attempts} attempt(s) (${result.reason}): ${result.error}`);
         break;
     }
 

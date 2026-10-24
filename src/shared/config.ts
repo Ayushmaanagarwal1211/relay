@@ -21,6 +21,11 @@ const schema = z.object({
   SMTP_PORT: z.coerce.number().int().positive().default(1025),
   EMAIL_FROM: z.string().min(1).default('Relay <no-reply@relay.local>'),
 
+  // smtp = real sending (Mailpit locally). mock = fake provider for load tests.
+  EMAIL_PROVIDER: z.enum(['smtp', 'mock']).default('smtp'),
+  MOCK_LATENCY_MS: z.coerce.number().int().nonnegative().default(50),
+  MOCK_FAILURE_RATE: z.coerce.number().min(0).max(1).default(0),
+
   // Outbox relay: how often to check for new rows, and how many to publish at once
   RELAY_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(500),
   RELAY_BATCH_SIZE: z.coerce.number().int().positive().default(100),
