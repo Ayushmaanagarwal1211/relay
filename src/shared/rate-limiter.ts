@@ -6,10 +6,17 @@ import { log } from './log';
  *
  *   - The bucket holds up to `capacity` tokens (the burst size).
  *   - It refills at `ratePerSec` tokens per second.
- *   - Each send takes 1 token. No token? Wait until one refills.
+ *   - Each send takes 1 token.
  *
  * Example: ratePerSec = 100, capacity = 100. After a quiet period, 100 emails can go out
  * at once (a burst), then about 100 per second after that, however many workers you run.
+ *
+ * RESERVATIONS: when the bucket is empty, the caller still takes a token, "on credit":
+ * the bucket goes below zero, and Redis answers "your token is ready in X ms". The caller
+ * sleeps exactly X ms and sends. One Redis call per email, however busy it gets.
+ * (The first version made callers ask again and again "is there a token yet?". Under
+ * load, 40 waiting callers asking every ~10ms meant thousands of Redis calls a second,
+ * which slowed everything else on the machine. The load test showed it.)
  *
  * Why Redis and not a counter in each worker's memory? With 3 workers each allowed
  * 100/s, you'd really send 300/s. The limit has to live in one shared place.
@@ -21,7 +28,7 @@ import { log } from './log';
  * The script uses Redis's own clock (TIME), not the worker's, so workers whose clocks
  * disagree can't refill the bucket too fast.
  */
-const TAKE_TOKEN_LUA = `
+const RESERVE_TOKEN_LUA = `
 local capacity = tonumber(ARGV[1])
 local rate_per_ms = tonumber(ARGV[2]) / 1000
 
@@ -35,24 +42,22 @@ local updated_at = tonumber(bucket[2]) or now
 -- Refill for the time that passed since the last call, up to the capacity
 tokens = math.min(capacity, tokens + math.max(0, now - updated_at) * rate_per_ms)
 
-local allowed = 0
+-- Take one token. Below zero means "reserved": it will exist once enough time passes.
+tokens = tokens - 1
 local wait_ms = 0
-if tokens >= 1 then
-  tokens = tokens - 1
-  allowed = 1
-else
-  wait_ms = math.ceil((1 - tokens) / rate_per_ms)
+if tokens < 0 then
+  wait_ms = math.ceil(-tokens / rate_per_ms)
 end
 
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated_at', now)
--- Forget idle buckets: once it would be full again anyway, the key isn't needed
-redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate_per_ms) + 1000)
+-- Forget the key once the bucket would be full again anyway
+redis.call('PEXPIRE', KEYS[1], math.ceil((capacity - tokens) / rate_per_ms) + 1000)
 
-return {allowed, wait_ms}
+return wait_ms
 `;
 
 type RedisWithBucket = Redis & {
-  takeToken(key: string, capacity: number, ratePerSec: number): Promise<[number, number]>;
+  reserveToken(key: string, capacity: number, ratePerSec: number): Promise<number>;
 };
 
 export interface RateLimiterOptions {
@@ -69,19 +74,18 @@ export class RateLimiter {
     redis: Redis,
     private options: RateLimiterOptions,
   ) {
-    redis.defineCommand('takeToken', { numberOfKeys: 1, lua: TAKE_TOKEN_LUA });
+    redis.defineCommand('reserveToken', { numberOfKeys: 1, lua: RESERVE_TOKEN_LUA });
     this.redis = redis as RedisWithBucket;
   }
 
-  // One attempt: { allowed: true } or { allowed: false, waitMs: how long until a token is ready }.
-  async tryTake(): Promise<{ allowed: boolean; waitMs: number }> {
+  // Takes one token and returns how many ms until it's ready (0 = send now).
+  async reserve(): Promise<number> {
     const { key, capacity, ratePerSec } = this.options;
-    const [allowed, waitMs] = await this.redis.takeToken(key, capacity, ratePerSec);
-    return { allowed: allowed === 1, waitMs };
+    return this.redis.reserveToken(key, capacity, ratePerSec);
   }
 
   /**
-   * Waits until a token is available, then takes it. Returns how long it waited (ms).
+   * Waits until our token is ready. Returns how long it waited (ms).
    *
    * If Redis is unreachable, we FAIL OPEN: send without limiting, and log a warning.
    * Trade-off: we might briefly exceed the provider's limit (it would then answer
@@ -89,19 +93,15 @@ export class RateLimiter {
    * Failing closed would stop ALL email whenever Redis has a problem.
    */
   async acquire(): Promise<number> {
-    const started = Date.now();
-    for (;;) {
-      let result: { allowed: boolean; waitMs: number };
-      try {
-        result = await this.tryTake();
-      } catch (err) {
-        this.warnThrottled(err);
-        return Date.now() - started;
-      }
-      if (result.allowed) return Date.now() - started;
-      // Random jitter, so waiting workers don't all retry at the same instant
-      await sleep(result.waitMs + Math.random() * 10);
+    let waitMs: number;
+    try {
+      waitMs = await this.reserve();
+    } catch (err) {
+      this.warnThrottled(err);
+      return 0;
     }
+    if (waitMs > 0) await sleep(waitMs);
+    return waitMs;
   }
 
   private warnThrottled(err: unknown) {
