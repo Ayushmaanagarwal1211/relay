@@ -16,6 +16,7 @@ Settings you can change:
 | workers | How many worker processes | 1 |
 | mock_latency_ms | How long the fake provider takes per email | 50 |
 | mock_failure_rate | Fraction of sends that fail (0.1 = 10%) | 0 |
+| provider_rate_limit | Max emails/s to the provider, across all workers (0 = off) | 1000 |
 
 Nothing to install, and it doesn't use your Codespaces hours. It uses GitHub Actions minutes instead; a free account includes 2,000 a month for private repos, and one run takes about 3.
 
@@ -93,6 +94,8 @@ The second worker helped a lot, and end-to-end latency dropped from 16.7s to 1.1
 ### 5. 10% provider failures: zero emails lost
 
 562 emails (about 9.4%) failed their first attempt and went through the retry queues. All 6,001 were delivered.
+
+Rate-limit results are in [05-rate-limiting.md](05-rate-limiting.md).
 
 ## Numbers you can put on your resume
 

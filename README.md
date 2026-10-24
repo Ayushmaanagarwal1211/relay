@@ -14,7 +14,7 @@ Client app ──POST /v1/emails (Idempotency-Key header)──► API service
                                           ▼
               Email worker: already sent? skip → rate limit (Redis) → send
                  failed → retry queue (wait 1m → 5m → 30m) → back to main queue
-                 failed 5 times → dead-letter queue
+                 failed 4 times → dead-letter queue
                                           ▼
               SMTP (Mailpit on your laptop) | Mock provider (for load tests)
 ```
@@ -26,7 +26,7 @@ Client app ──POST /v1/emails (Idempotency-Key header)──► API service
 - [x] Step 1: Design
 - [x] Step 2: API with idempotency, plus the transactional outbox write
 - [x] Step 3: Outbox relay, RabbitMQ, email worker, retries, dead-letter queue (plus CI)
-- [ ] Step 4: Rate limiting (Redis)
+- [x] Step 4: Rate limiting: token bucket in Redis, shared by all workers
 - [ ] Step 5: More tests
 - [x] Step 6: Mock provider and k6 load tests (failure drills: see the step 3 notes)
 - [ ] Step 7: Final README and results
@@ -41,6 +41,7 @@ GitHub Actions runner (2 CPU cores, 7 GB RAM), mock provider with 50ms latency. 
 | 200 emails/s, 10% provider failures | 6 ms | 6,001 / 6,001 (562 retried) | 176/s |
 | 500 emails/s, 1 worker | 1,322 ms | 14,269 / 14,269 | 214/s |
 | 500 emails/s, 2 workers | 2,694 ms | 12,957 / 12,957 | 358/s |
+| 200 emails/s, 2 workers, provider limit 100/s | 253 ms | 5,956 / 5,956 | 100.2/s (limit held) |
 
 Run it yourself: **Actions → Load test → Run workflow**, or `RATE=200 npm run load:test` locally.
 
