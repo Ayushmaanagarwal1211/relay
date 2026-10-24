@@ -1,7 +1,8 @@
 // GitHub Codespaces setup: Node.js + Docker, nothing to install on your own machine.
+// Pinned to Debian bookworm: the docker-in-docker feature does not install on trixie.
 {
   "name": "relay",
-  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22-bookworm",
   "features": {
     "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
