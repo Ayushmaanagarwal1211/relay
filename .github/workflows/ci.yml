@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # The same services as docker-compose.yml, started by GitHub before the job runs
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+          POSTGRES_DB: relay_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h localhost -U relay -d relay_test"
+          --health-interval 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4-management
+        env:
+          RABBITMQ_DEFAULT_USER: relay
+          RABBITMQ_DEFAULT_PASS: relay
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-retries 10
+      mailpit:
+        image: axllent/mailpit:latest
+        ports: ["1025:1025", "8025:8025"]
+
+    env:
+      TEST_DATABASE_URL: postgres://relay:relay@localhost:5432/relay_test
+      RABBITMQ_URL: amqp://relay:relay@localhost:5672
+      SMTP_HOST: localhost
+      SMTP_PORT: 1025
+      MAILPIT_URL: http://localhost:8025
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Unit tests
+        run: npm test
+      - name: Integration tests (Postgres)
+        run: npm run test:integration
+      - name: End-to-end tests (Postgres + RabbitMQ + Mailpit)
+        run: npm run test:e2e

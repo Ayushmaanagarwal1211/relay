@@ -17,5 +17,13 @@ module.exports = {
       testMatch: ['<rootDir>/tests/integration/**/*.test.ts'],
       globalSetup: '<rootDir>/tests/integration/global-setup.ts',
     },
+    {
+      // Needs Postgres, RabbitMQ and Mailpit running. Runs the whole pipeline end to end.
+      displayName: 'e2e',
+      testEnvironment: 'node',
+      transform: tsJest,
+      testMatch: ['<rootDir>/tests/e2e/**/*.test.ts'],
+      globalSetup: '<rootDir>/tests/integration/global-setup.ts',
+    },
   ],
 };
