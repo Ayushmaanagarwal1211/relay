@@ -12,8 +12,8 @@ Client app ──POST /v1/emails (Idempotency-Key header)──► API service
                                 ├─► transactional queue (OTPs, password resets)
                                 └─► promotional queue  (newsletters)
                                           ▼
-              Email worker: already sent? skip → rate limit (Redis) → send
-                 failed → retry queue (wait 1m → 5m → 30m) → back to main queue
+              Email worker: rate limit (Redis) → claim (skip if already sent) → send
+                 failed → retry queue (wait 10s → 1m → 5m) → back to main queue
                  failed 4 times → dead-letter queue
                                           ▼
               SMTP (Mailpit on your laptop) | Mock provider (for load tests)
