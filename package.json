@@ -4,7 +4,7 @@
   "private": true,
   "description": "Reliable email delivery service: idempotent API, transactional outbox, RabbitMQ workers with retries and a dead-letter queue.",
   "scripts": {
-    "infra:up": "docker compose up -d",
+    "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down",
     "db:migrate": "tsx src/scripts/migrate.ts",
     "dev:api": "tsx watch src/api/server.ts",
