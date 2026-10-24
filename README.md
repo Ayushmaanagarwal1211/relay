@@ -54,7 +54,7 @@ Send an email:
 ```bash
 curl -i -X POST localhost:3000/v1/emails \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: $(uuidgen)" \
+  -H "Idempotency-Key: $(node -p "crypto.randomUUID()")" \
   -d '{"to":"user@example.com","subject":"Your OTP","body":"Code: 123456"}'
 ```
 

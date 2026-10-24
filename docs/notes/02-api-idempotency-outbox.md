@@ -83,6 +83,6 @@ The outbox payload contains **only the email's id**, not the whole email. The wo
    `docker compose exec postgres psql -U relay -c "SELECT id, status FROM emails; SELECT * FROM outbox;"`
 4. Run 20 requests with the same key at once, then count the rows. You should see exactly 1 in each table:
    ```bash
-   K=$(uuidgen); for i in $(seq 1 20); do curl -s -o /dev/null -X POST localhost:3000/v1/emails -H "Content-Type: application/json" -H "Idempotency-Key: $K" -d '{"to":"a@b.com","subject":"Hi","body":"Hello"}' & done; wait
+   K=$(node -p "crypto.randomUUID()"); for i in $(seq 1 20); do curl -s -o /dev/null -X POST localhost:3000/v1/emails -H "Content-Type: application/json" -H "Idempotency-Key: $K" -d '{"to":"a@b.com","subject":"Hi","body":"Hello"}' & done; wait
    docker compose exec postgres psql -U relay -c "SELECT count(*) FROM emails WHERE idempotency_key = '$K';"
    ```
