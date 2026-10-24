@@ -1,0 +1,53 @@
+# Local infrastructure. Start with: npm run infra:up
+# Passwords here are throwaway values for your laptop only.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay
+      POSTGRES_DB: relay
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Creates the extra relay_test database used by integration tests
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay"]
+      interval: 5s
+      retries: 10
+
+  # Used from step 3: the job queue between the outbox relay and the email worker
+  rabbitmq:
+    image: rabbitmq:4-management
+    environment:
+      RABBITMQ_DEFAULT_USER: relay
+      RABBITMQ_DEFAULT_PASS: relay
+    ports:
+      - "5672:5672"   # AMQP (apps connect here)
+      - "15672:15672" # Management UI: http://localhost:15672 (relay / relay)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      retries: 10
+
+  # Used from step 5: rate limiting
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  # Fake email server: catches every email so nothing reaches a real inbox
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1025:1025" # SMTP (the worker sends here)
+      - "8025:8025" # Web inbox: http://localhost:8025
+
+volumes:
+  postgres-data:

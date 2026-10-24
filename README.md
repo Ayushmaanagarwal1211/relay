@@ -1,0 +1,101 @@
+# Relay: a reliable email delivery service
+
+Other apps call one API to send an email. Relay makes sure every email is sent, even when servers crash, the email provider fails, or the client retries the same request.
+
+## Architecture
+
+```
+Client app ──POST /v1/emails (Idempotency-Key header)──► API service
+                    │  one DB transaction: email row + outbox row
+                    ▼
+             Outbox relay ──► RabbitMQ
+                                ├─► transactional queue (OTPs, password resets)
+                                └─► promotional queue  (newsletters)
+                                          ▼
+              Email worker: already sent? skip → rate limit (Redis) → send
+                 failed → retry queue (wait 1m → 5m → 30m) → back to main queue
+                 failed 5 times → dead-letter queue
+                                          ▼
+              SMTP (Mailpit on your laptop) | Mock provider (for load tests)
+```
+
+**Delivery guarantee:** at-least-once, with idempotency. See [docs/notes](docs/notes) for the reasoning behind each decision.
+
+## Progress
+
+- [x] Step 1: Design
+- [x] Step 2: API with idempotency, plus the transactional outbox write
+- [ ] Step 3: Outbox relay, RabbitMQ, email worker, retries, dead-letter queue
+- [ ] Step 4: Rate limiting (Redis) and priority queues
+- [ ] Step 5: More tests, and CI with GitHub Actions
+- [ ] Step 6: Mock provider, k6 load tests, failure drills
+- [ ] Step 7: Final README and results
+
+## Run it
+
+**Easiest: GitHub Codespaces** (nothing to install). On GitHub, click **Code → Codespaces → Create codespace**. Dependencies install automatically; then run:
+
+```bash
+npm run infra:up && npm run db:migrate && npm run dev:api
+```
+
+**On your own machine:** requires Node.js 22+ and Docker.
+
+```bash
+npm install
+cp .env.example .env
+npm run infra:up      # Postgres, RabbitMQ, Redis, Mailpit
+npm run db:migrate
+npm run dev:api       # http://localhost:3000
+```
+
+Send an email:
+
+```bash
+curl -i -X POST localhost:3000/v1/emails \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d '{"to":"user@example.com","subject":"Your OTP","body":"Code: 123456"}'
+```
+
+Check its status:
+
+```bash
+curl localhost:3000/v1/emails/<id>
+```
+
+## API
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/v1/emails` | Queue an email. Requires an `Idempotency-Key` header. |
+| `GET` | `/v1/emails/:id` | Get an email's status: `queued`, `sending`, `sent` or `failed`. |
+| `GET` | `/health` | Health check (also checks the database). |
+
+`POST /v1/emails` responses:
+
+| Status | When |
+|---|---|
+| `202 Accepted` | The email was queued. |
+| `202 Accepted` + `Idempotent-Replayed: true` | A retry with the same key and body. Returns the original email; nothing new is queued. |
+| `400 Bad Request` | Missing `Idempotency-Key`, invalid body, or malformed JSON. |
+| `422 Unprocessable Entity` | The key was already used with a different body. |
+
+## Tests
+
+```bash
+npm test                  # unit tests, no Docker needed
+npm run test:integration  # needs `npm run infra:up`; uses the separate relay_test database
+```
+
+## Project layout
+
+```
+src/
+  api/        HTTP API: routes, validation, idempotency + outbox write
+  shared/     config, database pool, migrations
+  scripts/    one-off commands (migrate)
+migrations/   SQL schema, applied in filename order
+tests/        unit and integration tests
+docs/notes/   design decisions and interview notes for each step
+```

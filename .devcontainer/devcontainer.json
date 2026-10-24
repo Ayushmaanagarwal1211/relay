@@ -1,0 +1,15 @@
+// GitHub Codespaces setup: Node.js + Docker, nothing to install on your own machine.
+{
+  "name": "relay",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "postCreateCommand": "npm install && cp -n .env.example .env",
+  "forwardPorts": [3000, 8025, 15672],
+  "portsAttributes": {
+    "3000": { "label": "API" },
+    "8025": { "label": "Mailpit inbox" },
+    "15672": { "label": "RabbitMQ dashboard" }
+  }
+}
