@@ -28,8 +28,21 @@ Client app ──POST /v1/emails (Idempotency-Key header)──► API service
 - [x] Step 3: Outbox relay, RabbitMQ, email worker, retries, dead-letter queue (plus CI)
 - [ ] Step 4: Rate limiting (Redis)
 - [ ] Step 5: More tests
-- [ ] Step 6: Mock provider, k6 load tests, failure drills
+- [x] Step 6: Mock provider and k6 load tests (failure drills: see the step 3 notes)
 - [ ] Step 7: Final README and results
+
+## Load test results
+
+GitHub Actions runner (2 CPU cores, 7 GB RAM), mock provider with 50ms latency. Details and analysis: [docs/notes/04-load-testing.md](docs/notes/04-load-testing.md).
+
+| Test | API p95 | Delivered | Delivery rate |
+|---|---|---|---|
+| 200 emails/s, 1 worker | 22 ms | 6,001 / 6,001 | 197/s |
+| 200 emails/s, 10% provider failures | 6 ms | 6,001 / 6,001 (562 retried) | 176/s |
+| 500 emails/s, 1 worker | 1,322 ms | 14,269 / 14,269 | 214/s |
+| 500 emails/s, 2 workers | 2,694 ms | 12,957 / 12,957 | 358/s |
+
+Run it yourself: **Actions → Load test → Run workflow**, or `RATE=200 npm run load:test` locally.
 
 ## Run it
 
