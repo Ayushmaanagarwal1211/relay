@@ -23,7 +23,7 @@
 // Keep this import FIRST: it copies the shell's variables before config loads .env (see the file)
 import { shellEnv } from './shell-env';
 import { ChildProcess, execFile, spawn } from 'node:child_process';
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -117,7 +117,6 @@ const RESTART_DELAY_MS = 1000;
 class Supervised {
   child?: ChildProcess;
   restarts = 0;
-  readonly pids = new Set<number>(); // every process id it has had (it changes on restart)
   private stopping = false;
 
   constructor(
@@ -129,7 +128,6 @@ class Supervised {
     const log = openSync(path.join(logDir, `${this.name}.log`), 'a');
     this.child = spawn(process.execPath, [this.script], { env: childEnv, stdio: ['ignore', log, log] });
     closeSync(log); // the child has its own copy
-    if (this.child.pid) this.pids.add(this.child.pid);
     this.child.on('exit', () => {
       if (this.stopping) return;
       this.restarts++;
@@ -291,6 +289,7 @@ function startSampler(pool: Pool, redis: ReturnType<typeof createRedis>) {
   let stopped = false;
   const loop = (async () => {
     while (!stopped) {
+      sampleCpu();
       const [acceptedRes, outboxRes, delivered, rabbit, rssMb] = await Promise.all([
         pool.query<{ n: string }>('SELECT coalesce(max(id), 0) AS n FROM outbox'), // ids count up from 1
         pool.query<{ n: number }>('SELECT count(*)::int AS n FROM outbox WHERE published_at IS NULL'),
@@ -329,50 +328,59 @@ function startSampler(pool: Pool, redis: ReturnType<typeof createRedis>) {
 // ---------------------------------------------------------------- CPU (Linux only)
 
 // How much CPU each part used during the load: is one part the bottleneck, or is the whole
-// machine full? Compares the CPU time counters of every process before and after the load.
+// machine full? Every sample reads each process's CPU counter (/proc/<pid>/stat) and adds
+// what it used since the previous sample to its part. Sampling all along (not just at the
+// start and end) also counts processes that exit before the end, like k6.
 
-interface CpuSnapshot {
-  busy: number; // machine-wide CPU time spent working, in ticks (from /proc/stat)
-  total: number; // all CPU time, including idle
-  perPid: Map<number, { comm: string; seconds: number }>;
+let clockTicks = 100; // CPU counters are in "ticks" (usually 100 per second)
+const cpuByPart = new Map<string, number>(); // ticks
+let lastTicks = new Map<number, { comm: string; ticks: number }>();
+let machineStart: { busy: number; total: number } | null = null;
+let machineEnd: { busy: number; total: number } | null = null;
+let cpuStartedAt = 0;
+let cpuSeconds = 0;
+
+function machineTicks() {
+  // first line of /proc/stat: cpu  user nice system idle iowait irq softirq steal
+  const [user, nice, system, idle, iowait, irq, softirq, steal] = readFileSync('/proc/stat', 'utf8')
+    .split('\n')[0]
+    .trim()
+    .split(/\s+/)
+    .slice(1)
+    .map(Number);
+  const busy = user + nice + system + irq + softirq;
+  return { busy, total: busy + idle + iowait + steal };
 }
 
-const apiPids = new Set<number>(); // the cluster's API processes (children of api)
-
-async function cpuSnapshot(): Promise<CpuSnapshot | null> {
-  try {
-    // cpu  user nice system idle iowait irq softirq steal
-    const [user, nice, system, idle, iowait, irq, softirq, steal] = readFileSync('/proc/stat', 'utf8')
-      .split('\n')[0]
-      .trim()
-      .split(/\s+/)
-      .slice(1)
-      .map(Number);
-    for (const pid of api.pids) {
-      const { stdout } = await run('pgrep', ['-P', String(pid)]).catch(() => ({ stdout: '' }));
-      stdout
-        .split('\n')
-        .filter(Boolean)
-        .forEach((child) => apiPids.add(Number(child)));
+function processTicks() {
+  const result = new Map<number, { comm: string; ticks: number }>();
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
+      const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' '); // fields[0] is field 3 (state)
+      result.set(Number(entry), { comm, ticks: Number(fields[11]) + Number(fields[12]) }); // utime + stime
+    } catch {
+      // the process exited while we were reading
     }
-    const { stdout } = await run('ps', ['-e', '-o', 'pid=,times=,comm=']); // times = CPU seconds so far
-    const perPid = new Map<number, { comm: string; seconds: number }>();
-    for (const line of stdout.trim().split('\n')) {
-      const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
-      if (match) perPid.set(Number(match[1]), { seconds: Number(match[2]), comm: match[3] });
-    }
-    const busy = user + nice + system + irq + softirq;
-    return { busy, total: busy + idle + iowait + steal, perPid };
-  } catch {
-    return null; // not Linux (e.g. a Mac): skip the CPU table
   }
+  return result;
 }
 
-function component(pid: number, comm: string): string {
-  if (api.pids.has(pid) || apiPids.has(pid)) return 'API';
-  if (relays.some((r) => r.pids.has(pid))) return 'Relay';
-  if (workers.some((w) => w.pids.has(pid))) return 'Workers';
-  if (pid === process.pid) return 'This test script';
+function part(pid: number, comm: string): string {
+  if (comm === 'node') {
+    let cmdline = '';
+    try {
+      cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+    } catch {
+      // exited
+    }
+    if (cmdline.includes('dist/api/server.js')) return 'API';
+    if (cmdline.includes('dist/relay/main.js')) return 'Relay';
+    if (cmdline.includes('dist/worker/main.js')) return 'Workers';
+    if (pid === process.pid) return 'This test script';
+  }
   if (comm === 'postgres') return 'Postgres';
   if (['beam.smp', 'erl_child_setup', 'epmd', 'inet_gethost'].includes(comm)) return 'RabbitMQ';
   if (comm === 'k6') return 'k6 (the load generator)';
@@ -382,15 +390,39 @@ function component(pid: number, comm: string): string {
   return 'Other';
 }
 
-function cpuReport(start: CpuSnapshot | null, end: CpuSnapshot | null, seconds: number): string[] {
-  if (!start || !end || seconds <= 0) return [];
-  const used = new Map<string, number>();
-  for (const [pid, { comm, seconds: cpu }] of end.perPid) {
-    const before = start.perPid.get(pid);
-    const delta = before && before.comm === comm ? cpu - before.seconds : cpu; // new process: all of it
-    if (delta > 0) used.set(component(pid, comm), (used.get(component(pid, comm)) ?? 0) + delta);
+async function startCpu() {
+  try {
+    clockTicks = Number((await run('getconf', ['CLK_TCK'])).stdout.trim()) || 100;
+    machineStart = machineTicks();
+    lastTicks = processTicks();
+    cpuStartedAt = Date.now();
+  } catch {
+    machineStart = null; // not Linux (e.g. a Mac): no CPU table
   }
-  const busyShare = (end.busy - start.busy) / (end.total - start.total);
+}
+
+function sampleCpu() {
+  if (!machineStart || machineEnd) return;
+  const now = processTicks();
+  for (const [pid, { comm, ticks }] of now) {
+    const before = lastTicks.get(pid);
+    // A process that started since the last sample: count all of its CPU time
+    const used = before && before.comm === comm ? ticks - before.ticks : ticks;
+    if (used > 0) cpuByPart.set(part(pid, comm), (cpuByPart.get(part(pid, comm)) ?? 0) + used);
+  }
+  lastTicks = now;
+}
+
+function stopCpu() {
+  if (!machineStart) return;
+  sampleCpu();
+  machineEnd = machineTicks();
+  cpuSeconds = (Date.now() - cpuStartedAt) / 1000;
+}
+
+function cpuReport(): string[] {
+  if (!machineStart || !machineEnd || cpuSeconds <= 0) return [];
+  const busyShare = (machineEnd.busy - machineStart.busy) / (machineEnd.total - machineStart.total);
   return [
     '### CPU during the load',
     '',
@@ -398,11 +430,11 @@ function cpuReport(start: CpuSnapshot | null, end: CpuSnapshot | null, seconds: 
     '',
     '| Part | CPU cores used |',
     '|---|---|',
-    ...[...used.entries()]
-      .map(([name, cpu]) => [name, cpu / seconds] as const)
-      .filter(([, coresUsed]) => coresUsed >= 0.01)
+    ...[...cpuByPart.entries()]
+      .map(([name, ticks]) => [name, ticks / clockTicks / cpuSeconds] as const)
+      .filter(([, used]) => used >= 0.01)
       .sort((a, b) => b[1] - a[1])
-      .map(([name, coresUsed]) => `| ${name} | ${coresUsed.toFixed(2)} |`),
+      .map(([name, used]) => `| ${name} | ${used.toFixed(2)} |`),
     '',
   ];
 }
@@ -617,7 +649,7 @@ async function main() {
 
   const stopSampler = startSampler(pool, redis);
   k6StartedAt = Date.now();
-  const cpuBefore = await cpuSnapshot();
+  await startCpu();
   const chaos = scenario === 'chaos' ? scheduleChaos() : Promise.resolve();
   const k6 = await runK6({
     SCENARIO: scenario === 'spike' ? 'spike' : 'steady',
@@ -627,8 +659,7 @@ async function main() {
     PEAK_RATE: String(PEAK_RATE),
     API_URL,
   });
-  const cpuAfter = await cpuSnapshot();
-  const cpu = cpuReport(cpuBefore, cpuAfter, (Date.now() - k6StartedAt) / 1000);
+  stopCpu();
   await chaos;
 
   console.log('\nLoad finished. Waiting for every email to be delivered...');
@@ -637,7 +668,7 @@ async function main() {
   await stopSampler();
   const d = await results(pool, redis);
 
-  const text = report(k6, d, drainS, cpu);
+  const text = report(k6, d, drainS, cpuReport());
   writeFileSync(path.join(outDir, 'report.md'), `${text}\n`);
   writeFileSync(path.join(outDir, 'timeline.csv'), timelineCsv());
   console.log(`\n\n${text}\n\nSaved to ${outDir}/report.md (and timeline.csv, logs/)`);
