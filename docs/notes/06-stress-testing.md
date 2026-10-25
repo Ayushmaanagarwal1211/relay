@@ -208,7 +208,24 @@ Chaos events in that run:
 
 What the 2-core runner shows: everything (k6, Postgres, RabbitMQ, the app) shares 2 cores, so at 800/s the API slowed to seconds. The spike numbers need the bigger machine.
 
-### 8-core codespace
+### Optimization found by stress testing: 4 round trips → 1
+
+On a 4-core codespace, at 1,200/s the API topped out at about 935/s (k6 couldn't start 14,388 requests, p99 2.7s), while the worker could deliver 1,692/s at its peak. **The API was the bottleneck.**
+
+Each new email took 4 round trips to Postgres: `BEGIN`, insert the email, insert the outbox row, `COMMIT`. Now one statement does both inserts (see [02-api-idempotency-outbox.md](02-api-idempotency-outbox.md)). Still atomic, now 1 round trip.
+
+| Same 2-core runner, 800/s offered | Accepted per second |
+|---|---|
+| Old code, round 1 | 397/s |
+| **New code, round 1** | **495/s** |
+| Old code, round 2 | 396/s |
+| **New code, round 2** | **486/s** |
+
+**About 23% more requests per second, on the same hardware.**
+
+**A lesson about measuring:** the first comparison ran old and new code on separate GitHub runners, and the new code looked *slower* (577–669/s against 695/s). The runners had different CPUs (EPYC 9V45 vs 9V74), and the same old code did 695/s on one and 397/s on another. A fair comparison runs both versions **on the same machine, alternating** (A, B, A, B), so hardware differences cancel out.
+
+### 4-core codespace
 
 _Your runs go here._
 
@@ -226,3 +243,6 @@ _Your runs go here._
 10. Why didn't you turn off `synchronous_commit` to get a faster number?
 11. Your test ran k6, Postgres, RabbitMQ and the app on one machine. How does that affect the numbers?
 12. What would you change to reach 10,000 emails/s?
+13. The API was the bottleneck. How did you know, and what did you change?
+14. How can two INSERTs in one statement still be atomic without BEGIN/COMMIT?
+15. Your first before/after comparison said the optimization made things slower. What was wrong with the comparison?

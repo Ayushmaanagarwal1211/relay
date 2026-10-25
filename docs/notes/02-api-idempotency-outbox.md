@@ -2,7 +2,7 @@
 
 ## What was built
 
-- `POST /v1/emails`: validates the request, then saves the email **and** an outbox row in one transaction
+- `POST /v1/emails`: validates the request, then saves the email **and** an outbox row atomically (one SQL statement)
 - `GET /v1/emails/:id`: returns an email's status
 - Database tables: `emails` and `outbox` (see `migrations/001_create_emails_and_outbox.sql`)
 - Tests: 11 unit tests and 9 integration tests
@@ -25,7 +25,7 @@ Request arrives with key K
   ▼
 INSERT email with key K ... ON CONFLICT (idempotency_key) DO NOTHING
   │
-  ├── row inserted?  → new request → also insert outbox row → COMMIT → 202
+  ├── row inserted?  → new request → outbox row inserted in the same statement → 202
   │
   └── nothing inserted? → key K already exists → load that email
           ├── same body hash?      → client retry → 202 + Idempotent-Replayed: true
@@ -48,9 +48,22 @@ The key has to be saved **in the same transaction** as the email. If it lived in
 
 To catch a client reusing a key for a **different** email. Without the hash, we'd return the old email and the new one would be silently dropped. A 422 makes the bug visible.
 
-## Why the outbox row is in the same transaction
+## Why the outbox row is saved atomically with the email
 
-`withTransaction` in `src/shared/db.ts` wraps both inserts in `BEGIN ... COMMIT`. If anything fails, `ROLLBACK` undoes both. So there is never an email without an outbox row, or an outbox row without an email.
+Both rows are written by **one SQL statement** (`createEmail` in `src/api/emails.service.ts`):
+
+```sql
+WITH new_email AS (
+  INSERT INTO emails (...) VALUES (...) ON CONFLICT (idempotency_key) DO NOTHING RETURNING *
+), new_outbox AS (
+  INSERT INTO outbox (email_id, ...) SELECT id, ... FROM new_email   -- nothing if new_email is empty
+)
+SELECT * FROM new_email
+```
+
+A single statement is atomic by itself: Postgres saves both rows or neither. So there is never an email without an outbox row, or an outbox row without an email.
+
+**The first version** used `BEGIN`, `INSERT email`, `INSERT outbox`, `COMMIT`: four round trips to Postgres per request, with a connection held the whole time. The stress test showed the API was the bottleneck, so it became one statement. Tested on the same machine, the API took about **23% more** requests per second (396 → 490/s on a 2-core runner). Details in [06-stress-testing.md](06-stress-testing.md).
 
 The outbox payload contains **only the email's id**, not the whole email. The worker will read the rest from Postgres. That keeps queue messages small, and Postgres stays the single source of truth for the email's status.
 
