@@ -296,6 +296,24 @@ And in the 4-core codespace, the same 1,100/s test before and after:
 | Docker's network | 21 / 356 ms | 15,990 (kept growing) | about 825/s during the load | 18.4 s |
 | **Host network** | **13 / 249 ms** | **3,126** | **1,090/s, kept up** | **3.3 s** |
 
+### The headline run: 1,000 emails/s for 10 minutes (4-core codespace)
+
+| Metric | Result |
+|---|---|
+| Accepted | **598,372** (996.7/s); k6 couldn't start 1,627 of 600,000 (0.3%) |
+| Delivered | **598,372**: **0 lost, 0 duplicates** |
+| Delivery throughput | 993/s average |
+| API latency p50 / p95 / p99 | **9 ms** / 149 ms / 516 ms |
+| End-to-end latency p50 / p95 / p99 | **213 ms** / 4.0 s / 6.7 s |
+| Most waiting at once | outbox 427, RabbitMQ 6,103; all delivered 1 s after the load stopped |
+| Machine | 90% busy: Postgres 1.07 cores, kernel (network, disk) 0.99, API 0.57, k6 0.36, workers 0.28, RabbitMQ 0.21 |
+| Memory | Flat: workers 102 → 99 MB, relay 101 MB, API 364 MB after warm-up |
+
+Reading it honestly:
+- **It kept up for the whole 10 minutes.** Delivery averaged 993/s against 997/s accepted, and nothing was left waiting at the end.
+- **The median email took 213 ms end to end, but p95 was 4 s.** Every so often a backlog formed (up to 6,103) and cleared again. At 90% CPU, any extra work (Postgres writing a checkpoint, or autovacuum cleaning the growing tables) briefly slows everything. That's the cost of running close to the limit, and why you leave headroom in production.
+- **The bottleneck is the machine, mostly Postgres and the kernel's network and disk work.** Next steps for more throughput would be a bigger machine, Postgres on its own server, or fewer writes per email (e.g. batching the worker's status updates).
+
 Note: running a stress test switches those three containers to host networking (and `npm run infra:up` switches them back). Each switch recreates the containers, so RabbitMQ starts empty. Don't run `npm run dev` and a stress test at the same time.
 
 ## Practice questions
