@@ -9,10 +9,10 @@
  * Start the app first, with the mock provider and quiet logs:
  *   EMAIL_PROVIDER=mock LOG_LEVEL=warn npm run dev
  */
-import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { config } from '../shared/config';
 import { createPool } from '../shared/db';
+import { runK6 } from './k6';
 
 const RATE = process.env.RATE ?? '100';
 const DURATION = process.env.DURATION ?? '30s';
@@ -21,17 +21,6 @@ const DRAIN_TIMEOUT_S = Number(process.env.DRAIN_TIMEOUT_S ?? 180);
 const LOAD_TEST_EMAILS = `subject LIKE 'load-test %'`;
 
 const pool = createPool(config.DATABASE_URL);
-
-interface K6Result {
-  requests: number;
-  rate: number;
-  failedRate: number;
-  p50: number;
-  p95: number;
-  p99: number;
-  max: number;
-  dropped: number;
-}
 
 async function cleanPreviousRuns() {
   await pool.query(`DELETE FROM outbox WHERE email_id IN (SELECT id FROM emails WHERE ${LOAD_TEST_EMAILS})`);
@@ -48,26 +37,6 @@ async function checkApiIsUp() {
   console.error(`The API isn't running at ${API_URL}. Start the app first, in another terminal:`);
   console.error('  EMAIL_PROVIDER=mock LOG_LEVEL=warn npm run dev');
   process.exit(1);
-}
-
-// Runs k6 in Docker, streams its output, and picks out the K6_RESULT line.
-function runK6(): Promise<K6Result | null> {
-  return new Promise((resolve, reject) => {
-    const k6 = spawn('docker', ['compose', '--profile', 'load', 'run', '--rm', 'k6'], {
-      env: { ...process.env, RATE, DURATION, API_URL },
-      stdio: ['ignore', 'pipe', 'inherit'],
-    });
-    let output = '';
-    k6.stdout.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-      process.stdout.write(chunk);
-    });
-    k6.on('error', reject);
-    k6.on('close', () => {
-      const line = output.split('\n').find((l) => l.startsWith('K6_RESULT '));
-      resolve(line ? (JSON.parse(line.slice('K6_RESULT '.length)) as K6Result) : null);
-    });
-  });
 }
 
 async function waitForWorkers() {
@@ -109,7 +78,7 @@ async function main() {
   await cleanPreviousRuns();
 
   console.log(`Load test: ${RATE} requests/second for ${DURATION} against ${API_URL}\n`);
-  const k6 = await runK6();
+  const k6 = await runK6({ SCENARIO: 'steady', RATE, DURATION, API_URL });
   await waitForWorkers();
   const d = await deliveryStats();
 

@@ -1,0 +1,54 @@
+name: Stress test
+
+# Run by hand: GitHub → Actions → "Stress test" → "Run workflow".
+# The report appears on the run's summary page; logs and timeline.csv are attached as an artifact.
+# GitHub's free runner is small (2 cores for private repos, 4 for public ones), so use
+# lower rates here than on an 8-core codespace.
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "steady, spike, chaos or soak"
+        type: choice
+        options: [steady, spike, chaos, soak]
+        default: steady
+      rate:
+        description: "Emails per second (steady, chaos, soak)"
+        default: "300"
+      duration:
+        description: "How long (steady, chaos, soak), e.g. 1m, 5m"
+        default: "1m"
+      base_rate:
+        description: "Spike: normal emails per second"
+        default: "100"
+      peak_rate:
+        description: "Spike: emails per second during the burst"
+        default: "800"
+
+jobs:
+  stress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgres://relay:relay@localhost:5432/relay
+      RABBITMQ_URL: amqp://relay:relay@localhost:5672
+      REDIS_URL: redis://localhost:6379
+      RATE: ${{ inputs.rate }}
+      DURATION: ${{ inputs.duration }}
+      BASE_RATE: ${{ inputs.base_rate }}
+      PEAK_RATE: ${{ inputs.peak_rate }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The script starts Postgres, RabbitMQ and Redis itself (it needs to kill RabbitMQ in the chaos test)
+      - run: npm run stress -- ${{ inputs.scenario }}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: stress-${{ inputs.scenario }}
+          path: load-results/

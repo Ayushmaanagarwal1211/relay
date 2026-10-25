@@ -14,7 +14,12 @@ const commaSeparatedNumbers = z
 
 const schema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
+  // How many API processes to run. Node uses one CPU core per process, so on a bigger
+  // machine more processes = more requests per second (see src/api/server.ts).
+  API_PROCESSES: z.coerce.number().int().positive().default(1),
   DATABASE_URL: z.string().min(1),
+  // Max Postgres connections per process
+  DB_POOL_SIZE: z.coerce.number().int().positive().default(10),
   RABBITMQ_URL: z.string().min(1).default('amqp://relay:relay@localhost:5672'),
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
 
@@ -26,6 +31,9 @@ const schema = z.object({
   EMAIL_PROVIDER: z.enum(['smtp', 'mock']).default('smtp'),
   MOCK_LATENCY_MS: z.coerce.number().int().nonnegative().default(50),
   MOCK_FAILURE_RATE: z.coerce.number().min(0).max(1).default(0),
+  // Stress tests only: the mock records every send in Redis, so the test can count
+  // lost and duplicate emails (see src/scripts/stress-test.ts)
+  MOCK_RECORD_SENDS: z.stringbool().default(false),
 
   // Outbox relay: how often to check for new rows, and how many to publish at once
   RELAY_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(500),

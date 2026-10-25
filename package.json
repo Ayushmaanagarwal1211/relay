@@ -19,7 +19,8 @@
     "test": "jest --selectProjects unit",
     "test:integration": "jest --selectProjects integration --runInBand",
     "test:e2e": "jest --selectProjects e2e --runInBand",
-    "load:test": "tsx src/scripts/load-test.ts"
+    "load:test": "tsx src/scripts/load-test.ts",
+    "stress": "tsx src/scripts/stress-test.ts"
   },
   "dependencies": {
     "amqplib": "^2.2.0",

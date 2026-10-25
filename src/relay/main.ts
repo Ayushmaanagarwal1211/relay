@@ -4,7 +4,7 @@ import { connectRabbit, createTopology } from '../shared/rabbitmq';
 import { startRelay } from './run-relay';
 
 async function main() {
-  const pool = createPool(config.DATABASE_URL);
+  const pool = createPool(config.DATABASE_URL, config.DB_POOL_SIZE);
   const connection = await connectRabbit(config.RABBITMQ_URL);
 
   // If RabbitMQ goes away, exit and let the process manager (Docker, Kubernetes) restart us.

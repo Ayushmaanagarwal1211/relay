@@ -3,21 +3,23 @@ import { createPool } from '../shared/db';
 import { connectRabbit, createTopology } from '../shared/rabbitmq';
 import { createRedis, RateLimiter, waitForRedis } from '../shared/rate-limiter';
 import { EmailProvider, SmtpProvider } from './email-provider';
-import { MockProvider } from './mock-provider';
+import Redis from 'ioredis';
+import { MockProvider, RedisSendRecorder } from './mock-provider';
 import { startWorker } from './run-worker';
 
-function createProvider(): EmailProvider {
+function createProvider(redis: Redis): EmailProvider {
   if (config.EMAIL_PROVIDER === 'mock') {
     console.log(
       `[worker] using MOCK provider (${config.MOCK_LATENCY_MS}ms latency, ${config.MOCK_FAILURE_RATE * 100}% failures)`,
     );
-    return new MockProvider(config.MOCK_LATENCY_MS, config.MOCK_FAILURE_RATE);
+    const recorder = config.MOCK_RECORD_SENDS ? new RedisSendRecorder(redis) : undefined;
+    return new MockProvider(config.MOCK_LATENCY_MS, config.MOCK_FAILURE_RATE, recorder);
   }
   return new SmtpProvider({ host: config.SMTP_HOST, port: config.SMTP_PORT }, config.EMAIL_FROM);
 }
 
 async function main() {
-  const pool = createPool(config.DATABASE_URL);
+  const pool = createPool(config.DATABASE_URL, config.DB_POOL_SIZE);
   const connection = await connectRabbit(config.RABBITMQ_URL);
 
   // If RabbitMQ goes away, exit and let the process manager restart us. Messages we hadn't
@@ -27,9 +29,9 @@ async function main() {
     process.exit(1);
   });
 
-  const provider = createProvider();
   const redis = createRedis(config.REDIS_URL);
   await waitForRedis(redis);
+  const provider = createProvider(redis);
   const ratePerSec = config.PROVIDER_RATE_LIMIT_PER_SEC;
   const throttle =
     ratePerSec > 0

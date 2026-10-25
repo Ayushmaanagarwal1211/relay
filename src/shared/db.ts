@@ -1,7 +1,7 @@
 import { Pool, PoolClient } from 'pg';
 
-export function createPool(connectionString: string): Pool {
-  return new Pool({ connectionString, max: 10 });
+export function createPool(connectionString: string, max = 10): Pool {
+  return new Pool({ connectionString, max });
 }
 
 // Runs `fn` inside BEGIN ... COMMIT. Any error rolls everything back,
