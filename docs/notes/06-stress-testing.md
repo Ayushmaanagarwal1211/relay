@@ -237,6 +237,31 @@ What these show:
 - **Now the worker can't keep up during the load.** RabbitMQ filled up by about 700 emails/s (42,091 in 60s), so delivery during the load was only about 560/s. Once k6 stopped, the same worker drained all 42,091 in 27s (about 1,560/s). The worker isn't slow; while the load runs, k6, the API, Postgres and RabbitMQ are using the 4 cores. **The machine's CPU is the limit now**, not one component.
 - **The queue did its job:** 42,091 emails waited, none were lost, and all were delivered 27s after the load stopped.
 
+| Run | API accepted | API p50 / p99 | Waiting at most | Delivered during the load |
+|---|---|---|---|---|
+| 1,100/s, 1 worker | 1,093/s | 21 / 356 ms | 15,990 | about 825/s |
+| 1,100/s, **2 workers** | 1,049/s | 881 / 1,767 ms | 12,920 | about 834/s |
+
+**A second worker didn't help.** Delivery stayed at about 830/s, and the API got 40× slower at the median. The second worker didn't add CPU; it took CPU from the API. When the whole machine is full, adding processes only moves the bottleneck around. That's why the report now has a CPU table.
+
+## The CPU table
+
+Every report now ends with how many CPU cores each part used during the load (Linux only). It reads each process's CPU counter from `/proc/<pid>/stat` every couple of seconds. Example from a 2-core GitHub runner at 500/s:
+
+| Part | CPU cores used |
+|---|---|
+| Postgres | 0.53 |
+| API | 0.31 |
+| k6 (the load generator) | 0.23 |
+| Docker's port forwarding (docker-proxy) | 0.23 |
+| Workers | 0.16 |
+| RabbitMQ | 0.15 |
+
+How to read it:
+- **One part near 1.00** (a Node process can't use more than one core): that part is the bottleneck. Add processes of that kind.
+- **The machine near 100% busy, spread over many parts**: the machine is full. Only more cores, or less work per email, will help.
+- **k6 and docker-proxy are test overhead.** In production the load comes from other machines, and apps connect to Postgres and RabbitMQ directly, not through Docker's port forwarding. Here they use about a quarter of the CPU, so the real system needs less hardware than these tests suggest.
+
 ## Practice questions
 
 1. What's the difference between a load test, a spike test, a chaos test and a soak test? What does each one catch?
@@ -254,3 +279,5 @@ What these show:
 13. The API was the bottleneck. How did you know, and what did you change?
 14. How can two INSERTs in one statement still be atomic without BEGIN/COMMIT?
 15. Your first before/after comparison said the optimization made things slower. What was wrong with the comparison?
+16. Adding a second worker made the API slower and didn't speed up delivery. Why?
+17. In your CPU table, which parts are your system and which are test overhead? What does that mean for your numbers?

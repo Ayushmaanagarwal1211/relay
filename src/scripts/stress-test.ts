@@ -435,6 +435,7 @@ function stopCpu() {
 // e.g. "ksoftirqd/0 0.10, tsx 0.05": the biggest processes inside "Other"
 function topOthers() {
   return [...otherByName.entries()]
+    .filter(([, ticks]) => ticks / clockTicks / cpuSeconds >= 0.01)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 4)
     .map(([name, ticks]) => `${name} ${(ticks / clockTicks / cpuSeconds).toFixed(2)}`)
@@ -444,6 +445,10 @@ function topOthers() {
 function cpuReport(): string[] {
   if (!machineStart || !machineEnd || cpuSeconds <= 0) return [];
   const busyShare = (machineEnd.busy - machineStart.busy) / (machineEnd.total - machineStart.total);
+  // The kernel's interrupt handling (e.g. network packets) isn't charged to any process
+  const charged = [...cpuByPart.values()].reduce((sum, ticks) => sum + ticks, 0) / clockTicks / cpuSeconds;
+  const uncharged = busyShare * cores - charged;
+  if (uncharged >= 0.01) cpuByPart.set('Kernel interrupts (network, disk)', uncharged * clockTicks * cpuSeconds);
   return [
     '### CPU during the load',
     '',
@@ -455,7 +460,10 @@ function cpuReport(): string[] {
       .map(([name, ticks]) => [name, ticks / clockTicks / cpuSeconds] as const)
       .filter(([, used]) => used >= 0.01)
       .sort((a, b) => b[1] - a[1])
-      .map(([name, used]) => `| ${name === 'Other' ? `Other (${topOthers()})` : name} | ${used.toFixed(2)} |`),
+      .map(
+        ([name, used]) =>
+          `| ${name === 'Other' && topOthers() ? `Other (${topOthers()})` : name} | ${used.toFixed(2)} |`,
+      ),
     '',
   ];
 }
