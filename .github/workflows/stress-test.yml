@@ -45,6 +45,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Same as a codespace: a .env made for `npm run dev`. The stress test must ignore its
+      # dev settings (e.g. WORKER_PREFETCH=10) and use its own.
+      - run: cp .env.example .env
       # The script starts Postgres, RabbitMQ and Redis itself (it needs to kill RabbitMQ in the chaos test)
       - run: npm run stress -- ${{ inputs.scenario }}
       - uses: actions/upload-artifact@v7

@@ -20,6 +20,8 @@
  * Any setting can be changed with an environment variable, e.g.
  *   RATE=1500 DURATION=10m WORKERS=3 npm run stress -- steady
  */
+// Keep this import FIRST: it copies the shell's variables before config loads .env (see the file)
+import { shellEnv } from './shell-env';
 import { ChildProcess, execFile, spawn } from 'node:child_process';
 import { appendFileSync, closeSync, mkdirSync, openSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -52,7 +54,7 @@ if (!(scenario in SCENARIOS)) {
   process.exit(1);
 }
 const setting = (name: string, fallback?: string): string =>
-  process.env[name] ?? SCENARIOS[scenario][name] ?? fallback ?? '';
+  shellEnv[name] ?? SCENARIOS[scenario][name] ?? fallback ?? '';
 
 const cores = os.availableParallelism();
 const RATE = Number(setting('RATE', '0'));
@@ -61,7 +63,7 @@ const PEAK_RATE = Number(setting('PEAK_RATE', '0'));
 const DURATION = scenario === 'spike' ? SCENARIOS.spike.DURATION : setting('DURATION');
 const DURATION_S = parseDuration(DURATION);
 // Rough split of the machine: k6, Postgres and RabbitMQ need cores too
-const API_PROCESSES = Number(setting('API_PROCESSES', String(Math.max(1, Math.floor(cores / 4)))));
+const API_PROCESSES = Number(setting('API_PROCESSES', String(Math.max(1, Math.floor(cores / 2)))));
 const WORKERS = Number(setting('WORKERS', String(Math.max(1, Math.floor(cores / 4)))));
 const RELAYS = Number(setting('RELAYS', '1'));
 const SAMPLE_S = Number(setting('SAMPLE_S', scenario === 'soak' ? '10' : '2'));
@@ -513,7 +515,8 @@ function report(k6: K6Result | null, d: Awaited<ReturnType<typeof results>>, dra
 
 async function main() {
   mkdirSync(logDir, { recursive: true });
-  console.log(`Stress test "${scenario}" on ${cores} CPU cores. Results will be in ${outDir}\n`);
+  console.log(`Stress test "${scenario}" on ${cores} CPU cores. Results will be in ${outDir}`);
+  console.log(`Settings: WORKERS=${WORKERS} RELAYS=${RELAYS}`, appSettings, '\n');
 
   await sh('docker', ['compose', 'up', '-d', '--wait', 'postgres', 'rabbitmq', 'redis']);
   await sh('npm', ['run', 'build', '--silent']);
