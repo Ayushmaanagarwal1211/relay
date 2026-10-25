@@ -189,7 +189,28 @@ What we did **not** change: Postgres still writes every commit to disk (`synchro
 
 ## Results
 
-_Runs on an 8-core codespace go here._
+### First check: GitHub's 2-core runner (small, to prove the tests work)
+
+| Test | Accepted | Delivered | Lost | Duplicates | API p99 |
+|---|---|---|---|---|---|
+| steady, 300/s for 1m | 17,948 | 17,948 | 0 | 0 | 207 ms |
+| spike, 100 → 800 → 100/s | 39,187 | 39,187 | 0 | 0 | 2,639 ms |
+| chaos, 200/s for 2m | 23,869 | 23,869 | 0 | 0 | 245 ms |
+
+Chaos events in that run:
+
+| Time | What happened | Effect |
+|---|---|---|
+| 0:24 | kill -9 worker-1 | delivery dropped to 102/s, back to normal 3s after |
+| 0:48 | kill -9 the outbox relay | delivery dropped to 159/s, back to normal 4s after |
+| 1:12 | killed RabbitMQ, restarted 10s later | delivery dropped to 0/s, back to normal 19s after. The API kept accepting 200/s the whole time; 3,390 emails waited in the outbox. |
+| 1:36 | kill -9 the API (1 process on 2 cores) | k6 retried 280 requests with the same Idempotency-Key; 0 rejected, 0 saved twice |
+
+What the 2-core runner shows: everything (k6, Postgres, RabbitMQ, the app) shares 2 cores, so at 800/s the API slowed to seconds. The spike numbers need the bigger machine.
+
+### 8-core codespace
+
+_Your runs go here._
 
 ## Practice questions
 

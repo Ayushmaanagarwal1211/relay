@@ -29,7 +29,8 @@ Client app ──POST /v1/emails (Idempotency-Key header)──► API service
 - [x] Step 4: Rate limiting: token bucket in Redis, shared by all workers
 - [ ] Step 5: More tests
 - [x] Step 6: Mock provider and k6 load tests (failure drills: see the step 3 notes)
-- [ ] Step 7: Final README and results
+- [x] Step 7: Stress tests: steady, spike, chaos (crashing workers, the relay, RabbitMQ and the API mid-load) and soak
+- [ ] Step 8: Final README and results
 
 ## Load test results
 
@@ -44,6 +45,19 @@ GitHub Actions runner (2 CPU cores, 7 GB RAM), mock provider with 50ms latency. 
 | 200 emails/s, 2 workers, provider limit 100/s | 253 ms | 5,956 / 5,956 | 100.2/s (limit held) |
 
 Run it yourself: **Actions → Load test → Run workflow**, or `RATE=200 npm run load:test` locally.
+
+## Stress tests
+
+One command starts the whole app (several API processes, the relay, the workers), runs k6, and checks that every accepted email reached the provider exactly as expected: the mock provider records each email it gets, so the report counts **lost** and **duplicate** emails. Details: [docs/notes/06-stress-testing.md](docs/notes/06-stress-testing.md).
+
+```bash
+npm run stress -- steady   # 1000 emails/s for 5 minutes
+npm run stress -- spike    # 200/s, a burst of 2000/s, back to 200/s
+npm run stress -- chaos    # load while it kills a worker, the relay, RabbitMQ and an API process
+npm run stress -- soak     # 300/s for 30 minutes, watching memory
+```
+
+Change the load with environment variables, e.g. `RATE=1500 DURATION=10m npm run stress -- steady`. Or run them on GitHub: **Actions → Stress test → Run workflow**.
 
 ## Run it
 
@@ -116,7 +130,7 @@ src/
   relay/      outbox relay: moves outbox rows into RabbitMQ
   worker/     email worker: claims, sends, retries, dead-letters
   shared/     config, database pool, migrations, RabbitMQ setup
-  scripts/    one-off commands (migrate)
+  scripts/    one-off commands: migrate, load test, stress tests
 migrations/   SQL schema, applied in filename order
 tests/        unit and integration tests
 docs/notes/   design decisions and interview notes for each step
