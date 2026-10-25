@@ -289,6 +289,13 @@ A/B on the same GitHub runner (2 cores, 800/s offered):
 
 **About 16% more emails accepted**, from removing test overhead alone. docker-proxy's row disappeared from the CPU table.
 
+And in the 4-core codespace, the same 1,100/s test before and after:
+
+| 1,100/s, 1 worker | API p50 / p99 | Waiting at most | Delivered | End-to-end p95 |
+|---|---|---|---|---|
+| Docker's network | 21 / 356 ms | 15,990 (kept growing) | about 825/s during the load | 18.4 s |
+| **Host network** | **13 / 249 ms** | **3,126** | **1,090/s, kept up** | **3.3 s** |
+
 Note: running a stress test switches those three containers to host networking (and `npm run infra:up` switches them back). Each switch recreates the containers, so RabbitMQ starts empty. Don't run `npm run dev` and a stress test at the same time.
 
 ## Practice questions
