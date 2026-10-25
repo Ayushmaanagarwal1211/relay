@@ -232,12 +232,14 @@ interface Sample {
 }
 
 const samples: Sample[] = [];
-const events: { t: number; text: string }[] = [];
+// measure = which rate a chaos event is expected to hit, so the report can show its effect
+type Measure = 'accepted' | 'delivered';
+const events: { t: number; text: string; measure?: Measure }[] = [];
 let k6StartedAt = 0;
 const now = () => (k6StartedAt ? (Date.now() - k6StartedAt) / 1000 : 0);
 
-function note(text: string) {
-  events.push({ t: now(), text });
+function note(text: string, measure?: Measure) {
+  events.push({ t: now(), text, measure });
   console.log(`\n>>> [${fmtTime(now())}] ${text}\n`);
 }
 
@@ -331,12 +333,13 @@ async function killOneApiProcess() {
   process.kill(pid, 'SIGKILL');
 }
 
-const chaosPlan: { at: number; text: string; action: () => Promise<void> | void }[] = [
-  { at: 0.2, text: 'kill -9 worker-1', action: () => workers[0].kill9() },
-  { at: 0.4, text: 'kill -9 the outbox relay', action: () => relays[0].kill9() },
+const chaosPlan: { at: number; text: string; measure: Measure; action: () => Promise<void> | void }[] = [
+  { at: 0.2, text: 'kill -9 worker-1', measure: 'delivered', action: () => workers[0].kill9() },
+  { at: 0.4, text: 'kill -9 the outbox relay', measure: 'delivered', action: () => relays[0].kill9() },
   {
     at: 0.6,
     text: 'killed RabbitMQ (docker kill), restarting it in 10s',
+    measure: 'delivered',
     action: async () => {
       rabbitKilled = true;
       await run('docker', ['compose', 'kill', 'rabbitmq']);
@@ -346,17 +349,17 @@ const chaosPlan: { at: number; text: string; action: () => Promise<void> | void 
       note('RabbitMQ started again');
     },
   },
-  { at: 0.8, text: 'kill -9 one API process', action: killOneApiProcess },
+  { at: 0.8, text: 'kill -9 one API process', measure: 'accepted', action: killOneApiProcess },
 ];
 
 function scheduleChaos(): Promise<unknown> {
   return Promise.all(
     chaosPlan.map(
-      ({ at, text, action }) =>
+      ({ at, text, measure, action }) =>
         new Promise<void>((resolve) =>
           setTimeout(
             async () => {
-              note(text);
+              note(text, measure);
               await Promise.resolve(action()).catch((err) => note(`chaos step failed: ${(err as Error).message}`));
               resolve();
             },
@@ -400,19 +403,23 @@ async function results(pool: Pool, redis: ReturnType<typeof createRedis>) {
   return { ...rows[0], deliveredUnique, duplicates: Number(duplicates ?? 0) };
 }
 
-// For each chaos event: how far did delivery drop, and how long until it was back to normal?
-function chaosEffect(t0: number): string {
-  if (!RATE) return '';
+// For each chaos event: how far did the rate it hits drop, and how long until it was back to normal?
+// Only looks until the next chaos event, so one event's effect isn't blamed on another.
+function chaosEffect(index: number): string {
+  const event = events[index];
+  if (!event.measure || !RATE) return '';
+  const nextEvent = events.slice(index + 1).find((e) => e.measure);
+  const end = Math.min(DURATION_S, nextEvent?.t ?? Infinity);
+  const field = event.measure;
   const rates = samples
-    .map((s, i) =>
-      i === 0 ? null : { t: s.t, rate: (s.delivered - samples[i - 1].delivered) / (s.t - samples[i - 1].t) },
-    )
-    .filter((r): r is { t: number; rate: number } => !!r && r.t > t0 && r.t <= t0 + 90);
+    .map((s, i) => (i === 0 ? null : { t: s.t, rate: (s[field] - samples[i - 1][field]) / (s.t - samples[i - 1].t) }))
+    .filter((r): r is { t: number; rate: number } => !!r && r.t > event.t && r.t <= end);
   if (!rates.length) return '';
+  const what = field === 'delivered' ? 'delivery' : 'emails accepted by the API';
   const low = rates.reduce((a, b) => (b.rate < a.rate ? b : a));
-  if (low.rate >= 0.9 * RATE) return `no visible drop (lowest ${Math.round(low.rate)}/s)`;
+  if (low.rate >= 0.9 * RATE) return `no visible drop in ${what} (lowest ${Math.round(low.rate)}/s)`;
   const back = rates.find((r) => r.t > low.t && r.rate >= 0.9 * RATE);
-  return `delivery dropped to ${Math.round(low.rate)}/s, ${back ? `back to normal ${Math.round(back.t - t0)}s after` : 'not back to normal within 90s'}`;
+  return `${what} dropped to ${Math.round(low.rate)}/s, ${back ? `back to normal ${Math.round(back.t - event.t)}s after` : 'not back to normal before the next event'}`;
 }
 
 function report(k6: K6Result | null, d: Awaited<ReturnType<typeof results>>, drainS: number | null) {
@@ -482,7 +489,7 @@ function report(k6: K6Result | null, d: Awaited<ReturnType<typeof results>>, dra
 
   if (scenario === 'chaos') {
     lines.push('### Chaos events', '', '| Time | What happened | Effect |', '|---|---|---|');
-    for (const e of events) lines.push(`| ${fmtTime(e.t)} | ${e.text} | ${chaosEffect(e.t)} |`);
+    events.forEach((e, i) => lines.push(`| ${fmtTime(e.t)} | ${e.text} | ${chaosEffect(i)} |`));
     const restarts = allProcesses.filter((p) => p.restarts > 0).map((p) => `${p.name} ×${p.restarts}`);
     lines.push('', `Process restarts: ${restarts.join(', ') || 'none'}.`, '');
   }
