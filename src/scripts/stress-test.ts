@@ -71,6 +71,11 @@ const DRAIN_TIMEOUT_S = Number(setting('DRAIN_TIMEOUT_S', '600'));
 const API_PORT = setting('STRESS_API_PORT', '3100');
 const API_URL = `http://localhost:${API_PORT}`;
 const VHOST = 'load-test';
+// Postgres, RabbitMQ and Redis on the machine's own network (see docker/compose.host-network.yml).
+// Linux only: set STRESS_HOST_NETWORK=false on a Mac.
+const HOST_NETWORK = setting('STRESS_HOST_NETWORK', 'true') !== 'false';
+const COMPOSE_FILES = HOST_NETWORK ? ['-f', 'docker-compose.yml', '-f', 'docker/compose.host-network.yml'] : [];
+const compose = (...args: string[]) => ['compose', ...COMPOSE_FILES, ...args];
 const LOAD_DB = 'relay_load';
 
 const appSettings = {
@@ -488,9 +493,9 @@ const chaosPlan: { at: number; text: string; measure: Measure; action: () => Pro
     measure: 'delivered',
     action: async () => {
       rabbitKilled = true;
-      await run('docker', ['compose', 'kill', 'rabbitmq']);
+      await run('docker', compose('kill', 'rabbitmq'));
       await sleep(10_000);
-      await run('docker', ['compose', 'start', 'rabbitmq']);
+      await run('docker', compose('start', 'rabbitmq'));
       rabbitKilled = false;
       note('RabbitMQ started again');
     },
@@ -599,7 +604,8 @@ function report(k6: K6Result | null, d: Awaited<ReturnType<typeof results>>, dra
     '',
     `Machine: ${cores} CPU cores (${os.cpus()[0]?.model.trim() ?? 'unknown'}), ${Math.round(os.totalmem() / 1024 ** 3)} GB RAM. ` +
       `App: ${API_PROCESSES} API process(es), ${RELAYS} relay(s), ${WORKERS} worker(s) (prefetch ${appSettings.WORKER_PREFETCH}). ` +
-      `Mock provider: ${appSettings.MOCK_LATENCY_MS} ms per email, ${Number(appSettings.MOCK_FAILURE_RATE) * 100}% failures.`,
+      `Mock provider: ${appSettings.MOCK_LATENCY_MS} ms per email, ${Number(appSettings.MOCK_FAILURE_RATE) * 100}% failures. ` +
+      `Postgres, RabbitMQ and Redis on ${HOST_NETWORK ? "the machine's own network" : "Docker's virtual network"}.`,
     '',
     '### API (POST /v1/emails)',
     '',
@@ -663,7 +669,7 @@ async function main() {
   console.log(`Stress test "${scenario}" on ${cores} CPU cores. Results will be in ${outDir}`);
   console.log(`Settings: WORKERS=${WORKERS} RELAYS=${RELAYS}`, appSettings, '\n');
 
-  await sh('docker', ['compose', 'up', '-d', '--wait', 'postgres', 'rabbitmq', 'redis']);
+  await sh('docker', compose('up', '-d', '--wait', 'postgres', 'rabbitmq', 'redis'));
   await sh('npm', ['run', 'build', '--silent']);
   const pool = await resetDatabase();
   await resetVhost();
@@ -680,14 +686,17 @@ async function main() {
   k6StartedAt = Date.now();
   await startCpu();
   const chaos = scenario === 'chaos' ? scheduleChaos() : Promise.resolve();
-  const k6 = await runK6({
-    SCENARIO: scenario === 'spike' ? 'spike' : 'steady',
-    RATE: String(RATE),
-    DURATION,
-    BASE_RATE: String(BASE_RATE),
-    PEAK_RATE: String(PEAK_RATE),
-    API_URL,
-  });
+  const k6 = await runK6(
+    {
+      SCENARIO: scenario === 'spike' ? 'spike' : 'steady',
+      RATE: String(RATE),
+      DURATION,
+      BASE_RATE: String(BASE_RATE),
+      PEAK_RATE: String(PEAK_RATE),
+      API_URL,
+    },
+    COMPOSE_FILES,
+  );
   stopCpu();
   await chaos;
 
@@ -733,7 +742,7 @@ function timelineCsv() {
 
 async function cleanup() {
   await Promise.all(allProcesses.map((p) => p.stop()));
-  if (rabbitKilled) await run('docker', ['compose', 'start', 'rabbitmq']).catch(() => {});
+  if (rabbitKilled) await run('docker', compose('start', 'rabbitmq')).catch(() => {});
 }
 
 process.on('SIGINT', async () => {

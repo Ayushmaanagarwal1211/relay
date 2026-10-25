@@ -17,9 +17,10 @@ export interface K6Result {
 
 // Runs k6 in Docker (nothing to install), streams its output, and picks out the K6_RESULT line.
 // `env` sets the k6 options read by load/send-emails.js: SCENARIO, RATE, DURATION, API_URL...
-export function runK6(env: Record<string, string>): Promise<K6Result | null> {
+// `composeFiles` are extra -f arguments for docker compose (the stress tests use one).
+export function runK6(env: Record<string, string>, composeFiles: string[] = []): Promise<K6Result | null> {
   return new Promise((resolve, reject) => {
-    const k6 = spawn('docker', ['compose', '--profile', 'load', 'run', '--rm', 'k6'], {
+    const k6 = spawn('docker', ['compose', ...composeFiles, '--profile', 'load', 'run', '--rm', 'k6'], {
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'inherit'],
     });
