@@ -276,7 +276,9 @@ On the 4-core codespace at 1,000/s (machine 97% busy), the CPU table showed:
 | Workers | 0.26 |
 | RabbitMQ | 0.22 |
 
-About **1.2 of the 4 cores** went to Docker's networking: every connection from the app to `localhost:5432` (and RabbitMQ, Redis) passed through `docker-proxy` and a virtual network card. In a codespace, Docker itself runs inside a container, which makes this worse.
+Every connection from the app to `localhost:5432` (and RabbitMQ, Redis) passed through `docker-proxy` (0.36 cores) and a virtual network card. It looked like the kernel interrupts (0.85 cores) were mostly Docker's networking too.
+
+**Correction, after measuring:** with host networking, docker-proxy disappeared, but kernel interrupts stayed at about 0.85–0.99 cores. So most of that is the kernel's normal network and disk work (connections over localhost, Postgres writing every commit to disk), not Docker. The real saving was docker-proxy's 0.36 cores, about 9% of the machine. A guess about the cause had to be checked with a measurement, like everything else here.
 
 That's an artifact of the test setup, so the stress tests now run Postgres, RabbitMQ and Redis on the machine's own network (`docker/compose.host-network.yml`, `network_mode: host`). The app's code didn't change.
 

@@ -2,7 +2,7 @@
 #
 # Postgres, RabbitMQ and Redis use the machine's own network instead of Docker's virtual
 # network. Normally every connection to localhost:5432 goes through docker-proxy and a
-# virtual network card, which on a 4-core codespace cost about 1.2 cores at 1,000 emails/s.
+# virtual network card; docker-proxy alone used about 0.36 of 4 cores at 1,000 emails/s.
 # In production nothing like that sits between the app and its database, so it shouldn't
 # eat into the numbers either. (k6 already runs this way: see docker-compose.yml.)
 services:

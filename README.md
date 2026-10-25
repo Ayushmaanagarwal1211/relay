@@ -59,7 +59,7 @@ npm run stress -- soak     # 300/s for 30 minutes, watching memory
 
 Change the load with environment variables, e.g. `RATE=1500 DURATION=10m npm run stress -- steady`. Or run them on GitHub: **Actions → Stress test → Run workflow**.
 
-**Headline result** (4-core codespace, everything including k6 on one machine): **598,372 emails in 10 minutes at about 1,000/s, 0 lost, 0 duplicates**, API p50 9 ms, end-to-end p50 213 ms. Found and fixed along the way: the API's 4 database round trips per email became 1 (+35% API throughput), and Docker's networking was taking about 1.2 of 4 cores out of the test. Full results and analysis: [docs/notes/06-stress-testing.md](docs/notes/06-stress-testing.md).
+**Headline result** (4-core codespace, everything including k6 on one machine): **598,372 emails in 10 minutes at about 1,000/s, 0 lost, 0 duplicates**, API p50 9 ms, end-to-end p50 213 ms. Found and fixed along the way: the API's 4 database round trips per email became 1 (+35% API throughput), and Docker's port forwarding (docker-proxy) was taking about 9% of the test machine's CPU. Full results and analysis: [docs/notes/06-stress-testing.md](docs/notes/06-stress-testing.md).
 
 ## Run it
 
