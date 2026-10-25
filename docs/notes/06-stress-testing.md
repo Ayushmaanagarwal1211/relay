@@ -262,6 +262,35 @@ How to read it:
 - **The machine near 100% busy, spread over many parts**: the machine is full. Only more cores, or less work per email, will help.
 - **k6 and docker-proxy are test overhead.** In production the load comes from other machines, and apps connect to Postgres and RabbitMQ directly, not through Docker's port forwarding. Here they use about a quarter of the CPU, so the real system needs less hardware than these tests suggest.
 
+## Removing Docker's network overhead
+
+On the 4-core codespace at 1,000/s (machine 97% busy), the CPU table showed:
+
+| Part | Cores |
+|---|---|
+| Postgres | 1.06 |
+| **Kernel interrupts (network, disk)** | **0.85** |
+| API | 0.63 |
+| **docker-proxy** | **0.36** |
+| k6 | 0.35 |
+| Workers | 0.26 |
+| RabbitMQ | 0.22 |
+
+About **1.2 of the 4 cores** went to Docker's networking: every connection from the app to `localhost:5432` (and RabbitMQ, Redis) passed through `docker-proxy` and a virtual network card. In a codespace, Docker itself runs inside a container, which makes this worse.
+
+That's an artifact of the test setup, so the stress tests now run Postgres, RabbitMQ and Redis on the machine's own network (`docker/compose.host-network.yml`, `network_mode: host`). The app's code didn't change.
+
+A/B on the same GitHub runner (2 cores, 800/s offered):
+
+| Round | Docker's network | Host network |
+|---|---|---|
+| 1 | 531/s | **590/s** |
+| 2 | 489/s | **593/s** |
+
+**About 16% more emails accepted**, from removing test overhead alone. docker-proxy's row disappeared from the CPU table.
+
+Note: running a stress test switches those three containers to host networking (and `npm run infra:up` switches them back). Each switch recreates the containers, so RabbitMQ starts empty. Don't run `npm run dev` and a stress test at the same time.
+
 ## Practice questions
 
 1. What's the difference between a load test, a spike test, a chaos test and a soak test? What does each one catch?
@@ -281,3 +310,4 @@ How to read it:
 15. Your first before/after comparison said the optimization made things slower. What was wrong with the comparison?
 16. Adding a second worker made the API slower and didn't speed up delivery. Why?
 17. In your CPU table, which parts are your system and which are test overhead? What does that mean for your numbers?
+18. Why did moving Postgres and RabbitMQ to host networking make the test faster? Would that change anything in production?
