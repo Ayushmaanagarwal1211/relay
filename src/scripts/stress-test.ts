@@ -334,6 +334,7 @@ function startSampler(pool: Pool, redis: ReturnType<typeof createRedis>) {
 
 let clockTicks = 100; // CPU counters are in "ticks" (usually 100 per second)
 const cpuByPart = new Map<string, number>(); // ticks
+const otherByName = new Map<string, number>(); // what's inside "Other", by process name
 let lastTicks = new Map<number, { comm: string; ticks: number }>();
 let machineStart: { busy: number; total: number } | null = null;
 let machineEnd: { busy: number; total: number } | null = null;
@@ -408,7 +409,10 @@ function sampleCpu() {
     const before = lastTicks.get(pid);
     // A process that started since the last sample: count all of its CPU time
     const used = before && before.comm === comm ? ticks - before.ticks : ticks;
-    if (used > 0) cpuByPart.set(part(pid, comm), (cpuByPart.get(part(pid, comm)) ?? 0) + used);
+    if (used <= 0) continue;
+    const name = part(pid, comm);
+    cpuByPart.set(name, (cpuByPart.get(name) ?? 0) + used);
+    if (name === 'Other') otherByName.set(comm, (otherByName.get(comm) ?? 0) + used);
   }
   lastTicks = now;
 }
@@ -418,6 +422,15 @@ function stopCpu() {
   sampleCpu();
   machineEnd = machineTicks();
   cpuSeconds = (Date.now() - cpuStartedAt) / 1000;
+}
+
+// e.g. "ksoftirqd/0 0.10, tsx 0.05": the biggest processes inside "Other"
+function topOthers() {
+  return [...otherByName.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([name, ticks]) => `${name} ${(ticks / clockTicks / cpuSeconds).toFixed(2)}`)
+    .join(', ');
 }
 
 function cpuReport(): string[] {
@@ -434,7 +447,7 @@ function cpuReport(): string[] {
       .map(([name, ticks]) => [name, ticks / clockTicks / cpuSeconds] as const)
       .filter(([, used]) => used >= 0.01)
       .sort((a, b) => b[1] - a[1])
-      .map(([name, used]) => `| ${name} | ${used.toFixed(2)} |`),
+      .map(([name, used]) => `| ${name === 'Other' ? `Other (${topOthers()})` : name} | ${used.toFixed(2)} |`),
     '',
   ];
 }
