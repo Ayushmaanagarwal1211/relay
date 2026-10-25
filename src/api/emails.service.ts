@@ -1,5 +1,4 @@
 import { Pool } from 'pg';
-import { withTransaction } from '../shared/db';
 import { hashRequest } from './request-hash';
 import type { CreateEmailInput } from './schemas';
 
@@ -31,37 +30,36 @@ export async function createEmail(
 ): Promise<CreateEmailResult> {
   const requestHash = hashRequest(input);
 
-  return withTransaction(pool, async (client) => {
-    // ON CONFLICT DO NOTHING: if this key already exists, insert nothing and
-    // return no rows. If another request with the same key is mid-transaction,
-    // Postgres makes this one wait until that one commits, so exactly one wins.
-    const inserted = await client.query<EmailRow>(
-      `INSERT INTO emails (idempotency_key, request_hash, to_address, subject, body, priority)
+  // ONE statement saves the email row AND its outbox row. A single statement is atomic on
+  // its own: both rows are saved, or neither is, with no BEGIN/COMMIT needed.
+  // (The first version ran BEGIN, INSERT email, INSERT outbox, COMMIT: 4 round trips to
+  // Postgres per request. This is 1. The stress test showed the difference.)
+  //
+  // ON CONFLICT DO NOTHING: if this key already exists, insert nothing and return no rows,
+  // so the outbox insert (which reads new_email) inserts nothing too. If another request
+  // with the same key is mid-insert, Postgres makes this one wait until it finishes,
+  // so exactly one wins.
+  const inserted = await pool.query<EmailRow>(
+    `WITH new_email AS (
+       INSERT INTO emails (idempotency_key, request_hash, to_address, subject, body, priority)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (idempotency_key) DO NOTHING
-       RETURNING *`,
-      [idempotencyKey, requestHash, input.to, input.subject, input.body, input.priority],
-    );
+       RETURNING *
+     ), new_outbox AS (
+       -- The queue message carries only the id; the worker reads the rest from Postgres.
+       INSERT INTO outbox (email_id, routing_key, payload)
+       SELECT id, priority, jsonb_build_object('emailId', id) FROM new_email
+     )
+     SELECT * FROM new_email`,
+    [idempotencyKey, requestHash, input.to, input.subject, input.body, input.priority],
+  );
+  if (inserted.rows.length === 1) return { kind: 'created', email: inserted.rows[0] };
 
-    if (inserted.rows.length === 1) {
-      const email = inserted.rows[0];
-      // Outbox row in the same transaction: both rows are saved, or neither is.
-      // The queue message carries only the id; the worker reads the rest from Postgres.
-      await client.query(
-        `INSERT INTO outbox (email_id, routing_key, payload) VALUES ($1, $2, $3)`,
-        [email.id, email.priority, { emailId: email.id }],
-      );
-      return { kind: 'created', email };
-    }
-
-    // The key was used before. Return the original email if the body matches.
-    const existing = await client.query<EmailRow>('SELECT * FROM emails WHERE idempotency_key = $1', [
-      idempotencyKey,
-    ]);
-    const email = existing.rows[0];
-    if (email.request_hash !== requestHash) return { kind: 'key_reused' };
-    return { kind: 'replayed', email };
-  });
+  // The key was used before. Return the original email if the body matches.
+  const existing = await pool.query<EmailRow>('SELECT * FROM emails WHERE idempotency_key = $1', [idempotencyKey]);
+  const email = existing.rows[0];
+  if (email.request_hash !== requestHash) return { kind: 'key_reused' };
+  return { kind: 'replayed', email };
 }
 
 export async function getEmail(pool: Pool, id: string): Promise<EmailRow | null> {
