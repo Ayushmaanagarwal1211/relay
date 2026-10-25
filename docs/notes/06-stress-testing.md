@@ -225,9 +225,17 @@ Each new email took 4 round trips to Postgres: `BEGIN`, insert the email, insert
 
 **A lesson about measuring:** the first comparison ran old and new code on separate GitHub runners, and the new code looked *slower* (577–669/s against 695/s). The runners had different CPUs (EPYC 9V45 vs 9V74), and the same old code did 695/s on one and 397/s on another. A fair comparison runs both versions **on the same machine, alternating** (A, B, A, B), so hardware differences cancel out.
 
-### 4-core codespace
+### 4-core codespace (AMD EPYC 7763, 16 GB RAM, 2 API processes, 1 worker)
 
-_Your runs go here._
+| Run | API accepted | k6 couldn't start | API p99 | Delivered | Waiting at most | Lost |
+|---|---|---|---|---|---|---|
+| 1,200/s offered, old API code (4 round trips) | 935/s | 14,388 | 2,670 ms | 57,613 | 11,363 | 0 |
+| 1,300/s offered, new API code (1 statement) | **1,264/s** | 2,056 | 1,020 ms | 75,946 | 42,091 | 0 |
+
+What these show:
+- **The API is about 35% faster on the same machine** after the 4 → 1 round-trip change (935 → 1,264 accepted/s).
+- **Now the worker can't keep up during the load.** RabbitMQ filled up by about 700 emails/s (42,091 in 60s), so delivery during the load was only about 560/s. Once k6 stopped, the same worker drained all 42,091 in 27s (about 1,560/s). The worker isn't slow; while the load runs, k6, the API, Postgres and RabbitMQ are using the 4 cores. **The machine's CPU is the limit now**, not one component.
+- **The queue did its job:** 42,091 emails waited, none were lost, and all were delivered 27s after the load stopped.
 
 ## Practice questions
 
