@@ -335,7 +335,7 @@ function startSampler(pool: Pool, redis: ReturnType<typeof createRedis>) {
 let clockTicks = 100; // CPU counters are in "ticks" (usually 100 per second)
 const cpuByPart = new Map<string, number>(); // ticks
 const otherByName = new Map<string, number>(); // what's inside "Other", by process name
-let lastTicks = new Map<number, { comm: string; ticks: number }>();
+let lastTicks = new Map<number, { comm: string; ticks: number; startedAt: number }>();
 let machineStart: { busy: number; total: number } | null = null;
 let machineEnd: { busy: number; total: number } | null = null;
 let cpuStartedAt = 0;
@@ -354,14 +354,19 @@ function machineTicks() {
 }
 
 function processTicks() {
-  const result = new Map<number, { comm: string; ticks: number }>();
+  const result = new Map<number, { comm: string; ticks: number; startedAt: number }>();
   for (const entry of readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue;
     try {
       const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
       const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
       const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' '); // fields[0] is field 3 (state)
-      result.set(Number(entry), { comm, ticks: Number(fields[11]) + Number(fields[12]) }); // utime + stime
+      // utime + stime = CPU used so far. starttime tells a reused pid apart from the old process.
+      result.set(Number(entry), {
+        comm,
+        ticks: Number(fields[11]) + Number(fields[12]),
+        startedAt: Number(fields[19]),
+      });
     } catch {
       // the process exited while we were reading
     }
@@ -388,6 +393,9 @@ function part(pid: number, comm: string): string {
   if (comm === 'redis-server') return 'Redis';
   if (comm === 'docker-proxy') return "Docker's port forwarding (docker-proxy)";
   if (/^(dockerd|containerd)/.test(comm)) return 'Docker';
+  // Kernel threads: mostly writing data to disk (Postgres and RabbitMQ save every commit) and networking
+  if (/^(kworker|ksoftirqd|jbd2|kswapd|rcu_|migration|irq\/)/.test(comm))
+    return 'Linux kernel (disk writes, networking)';
   return 'Other';
 }
 
@@ -405,10 +413,10 @@ async function startCpu() {
 function sampleCpu() {
   if (!machineStart || machineEnd) return;
   const now = processTicks();
-  for (const [pid, { comm, ticks }] of now) {
+  for (const [pid, { comm, ticks, startedAt }] of now) {
     const before = lastTicks.get(pid);
     // A process that started since the last sample: count all of its CPU time
-    const used = before && before.comm === comm ? ticks - before.ticks : ticks;
+    const used = before && before.startedAt === startedAt ? ticks - before.ticks : ticks;
     if (used <= 0) continue;
     const name = part(pid, comm);
     cpuByPart.set(name, (cpuByPart.get(name) ?? 0) + used);
